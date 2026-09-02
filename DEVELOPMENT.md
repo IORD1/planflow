@@ -215,8 +215,10 @@ ssh iord@thundertrident 'docker exec -i postgres pg_restore -U postgres -d planf
   < /mnt/immich-storage/postgres-backups/2026-09-03_00-30/planflow.dump'
 ```
 
-To look at the data directly, open Adminer at http://thundertrident:8091 and log in with
-the user and password from `~/planflow/.env`.
+To look at the data directly, open Adminer through
+http://thundertrident:8091/?pgsql=postgres&username=planflow (this link preselects
+PostgreSQL; the plain URL defaults to MySQL and fails) and enter the password from
+`~/planflow/.env`. Leave Database empty.
 
 Before 2026-09-03 the app stored its data in a SQLite file; `scripts/migrate-sqlite.js`
 is the one-off importer that moved it into Postgres.
