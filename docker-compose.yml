@@ -1,3 +1,5 @@
+# Planflow talks to the shared Postgres from ~/homelab/postgres over the `homelab` network.
+# DATABASE_URL comes from ./.env on the server (created with ~/homelab/postgres/new-db.sh planflow).
 services:
   planflow:
     build: .
@@ -6,10 +8,15 @@ services:
     user: "1000:1000"
     ports:
       - "8090:8090"
-    volumes:
-      - ./data:/data
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?put DATABASE_URL in .env, see ~/homelab/postgres/new-db.sh}
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8090/api/health"]
       interval: 60s
       timeout: 5s
       retries: 3
+    networks: [homelab]
+
+networks:
+  homelab:
+    external: true

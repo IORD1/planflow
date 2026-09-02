@@ -89,11 +89,13 @@ There are two parts. Everything lives in two files plus a stylesheet.
 
 ### Server (`server.js`)
 
-A plain Node HTTP server, no framework, no npm packages. It does three things:
+A plain Node HTTP server, no framework; the only npm package is the `pg` Postgres driver. It does three things:
 
 1. Serves the static frontend from `public/`.
 2. Answers the JSON API under `/api/`.
-3. Stores everything in one SQLite file through Node's built-in `node:sqlite`.
+3. Stores everything in a PostgreSQL database (`db.js` holds the connection and the schema).
+   On thundertrident that is the shared Postgres server every app on the box uses,
+   in a database called `planflow`.
 
 The database has three tables:
 

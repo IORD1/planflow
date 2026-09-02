@@ -6,40 +6,42 @@
 | --- | --- |
 | `~/Project/planflow` on the laptop | the source. Edit here |
 | `~/planflow` on thundertrident | the deployed copy, a git clone that auto-updates from GitHub |
-| `~/planflow/data/planflow.db` on thundertrident | the live database (plus `-wal` and `-shm` files) |
+| `planflow` database in the shared Postgres on thundertrident | the live data. Server: `~/homelab/postgres`, data on the SSD, dumps on the HDD |
+| `~/planflow/.env` on thundertrident | `DATABASE_URL` for that database (git-ignored) |
 | http://thundertrident:8090 | the running app, reachable on the Tailscale network |
 | https://github.com/IORD1/planflow | the repo. Pushing to `main` deploys within 10 minutes |
 
 Project layout:
 
 ```
-server.js            HTTP server, API, SQLite schema and seed
+server.js            HTTP server, API, queries and seed
+db.js                Postgres connection pool, schema (CREATE TABLE IF NOT EXISTS), helpers
+scripts/             one-off tools (migrate-sqlite.js imported the old SQLite file)
 public/index.html    page skeleton, top bar, SVG arrow markers
 public/app.js        all frontend logic
 public/style.css     all styling (colour tokens at the top in :root)
-Dockerfile           node:24-alpine, copies server.js + public/
-docker-compose.yml   one service, port 8090, ./data mounted at /data
+Dockerfile           node:24-alpine, npm ci, copies server.js + db.js + public/
+docker-compose.yml   one service, port 8090, joins the external `homelab` network
 deploy/              auto-deploy script, systemd units and config used on the server
-data/                local database when running outside Docker (git-ignored)
 ```
 
 ## Running locally
 
-Needs Node 22.13 or newer (for the built-in `node:sqlite`). Nothing to install.
+Needs Node 22 or newer and a Postgres database to point at. The easiest is a throwaway
+database on the shared server, created over Tailscale:
 
 ```sh
+ssh iord@thundertrident '~/homelab/postgres/new-db.sh planflow_dev'   # prints a DATABASE_URL
 cd ~/Project/planflow
-node --no-warnings server.js
-# → http://localhost:8090, database in ./data/planflow.db
+npm install
+DATABASE_URL='postgres://planflow_dev:...@thundertrident:5432/planflow_dev' node server.js
+# → http://localhost:8090, tables are created on first start, an example board is seeded
 ```
 
-To try changes against a throwaway database or another port:
+Use `PORT=8095` to pick another port. Drop the throwaway database when done:
+`ssh iord@thundertrident 'docker exec postgres psql -U postgres -c "DROP DATABASE planflow_dev" -c "DROP ROLE planflow_dev"'`.
 
-```sh
-PORT=8091 DB_PATH=/tmp/planflow-test.db node --no-warnings server.js
-```
-
-`--no-warnings` only hides Node's "SQLite is experimental" notice.
+Never point a local run at the live `planflow` database unless you mean to edit real data.
 
 ## Making changes
 
@@ -53,15 +55,19 @@ There is no build step and no cache, the server sends files fresh each time.
   editor are the two branches of that function.
 - How a box looks is `makeNode()` and `updateNode()`.
 
-**Server or schema changes**: edit `server.js`.
+**Server or schema changes**: edit `server.js` (routes and queries) or `db.js` (schema).
 
 - New routes: add a `route('METHOD', '/api/path/:id', handler)` line. Numeric path
   parts become `params`, the parsed JSON body is `body`. Return a value for a 200, or
   `[status, value]` for something else. Throw `new HttpError(409, 'why')` for errors.
-- New columns: add them to the `CREATE TABLE` in the schema block **and** add an
-  `ALTER TABLE ... ADD COLUMN` guarded by a try/catch for existing databases, because
-  `CREATE TABLE IF NOT EXISTS` does nothing on a table that already exists. Then extend
-  the prepared statements in `q`, the `taskOut()` shape, and the frontend.
+- New columns: add them to the `CREATE TABLE` in `db.js` **and** add an
+  `ALTER TABLE ... ADD COLUMN IF NOT EXISTS ...` line after it for databases that
+  already exist, because `CREATE TABLE IF NOT EXISTS` does nothing on an existing table.
+  Then extend the queries in `q`, the `taskOut()` shape, and the frontend.
+- Queries use `$1, $2, ...` placeholders. `COUNT(*)` comes back as a string from
+  Postgres, so cast it (`COUNT(*)::int`) when the frontend expects a number.
+  Timestamps come back as `Date` objects and serialise to ISO strings, which is what
+  the frontend sorts and formats.
 
 Before deploying, at least syntax-check both files:
 
@@ -72,7 +78,7 @@ node --check server.js && node --check public/app.js
 Quick API smoke test against a local instance:
 
 ```sh
-B=http://localhost:8091
+B=http://localhost:8090
 curl -s $B/api/health
 curl -s $B/api/boards
 curl -s -X POST $B/api/boards/1/tasks -H 'Content-Type: application/json' -d '{"title":"Try it","x":100,"y":100}'
@@ -135,8 +141,9 @@ That is the whole deploy. What happens on the server:
 4. Nothing happens when there is no new commit, so the timer is cheap.
 
 The server checkout is `~/planflow` on thundertrident, a normal git clone whose remote
-uses the SSH alias `github.com-planflow` (see `~/.ssh/config` there). The database in
-`~/planflow/data/` is git-ignored, so a reset never touches it.
+uses the SSH alias `github.com-planflow` (see `~/.ssh/config` there). The `.env` file
+holding `DATABASE_URL` is git-ignored, so a reset never touches it, and the data itself
+lives in the Postgres container, not in this directory.
 
 The script and unit files are kept in this repo under `deploy/` so the setup can be
 rebuilt or copied to another machine.
@@ -163,7 +170,10 @@ Fix the problem, push again, and the next tick retries. The interval lives in
    and add it with `gh repo deploy-key add ~/.ssh/<app>_deploy.pub --repo IORD1/<app>`
    from the laptop.
 2. Make sure the repo has a `docker-compose.yml` at its root.
-3. Add a line to `/etc/autodeploy.conf`: `/home/iord/<app> main`.
+3. If it needs a database: `~/homelab/postgres/new-db.sh <app>` on the server, put the
+   printed `DATABASE_URL` in `~/<app>/.env`, and join the `homelab` network in its compose
+   file (see the `homelab` repo README).
+4. Add a line to `/etc/autodeploy.conf`: `/home/iord/<app> main`.
 
 ### Manual deploy (fallback)
 
@@ -181,7 +191,7 @@ Useful commands on the server (all from `~/planflow`):
 docker compose ps                 # status and health
 docker compose logs -f            # follow logs
 docker compose restart
-docker compose down               # stop and remove the container, keeps data/
+docker compose down               # stop and remove the container; the data stays in Postgres
 docker compose up -d              # start again without rebuilding
 sudo systemctl stop autodeploy.timer    # pause auto-deploys; start to resume
 ```
@@ -191,30 +201,35 @@ sudo systemctl stop autodeploy.timer    # pause auto-deploys; start to resume
 Edit the `ports:` line in `docker-compose.yml` to `"NEWPORT:8090"` and run
 `docker compose up -d`. The left side is the host port; the app inside always
 listens on 8090. Ports already taken on thundertrident: 80 (Apache), 2283 (Immich),
-19999 (Netdata), 8090 (this app).
+19999 (Netdata), 5432 (Postgres), 8090 (this app), 8091 (Adminer, the database web UI).
 
 ### Backups
 
-The whole state is one SQLite file. Safest copy while the app is running:
+The shared Postgres dumps every database to the HDD four times a day
+(`/mnt/immich-storage/postgres-backups/<date_time>/planflow.dump`, kept 30 days).
+Nothing to do here. To take one right now, or to restore:
 
 ```sh
-ssh iord@thundertrident 'cd ~/planflow && docker compose exec planflow node -e "
-  const {DatabaseSync}=require(\"node:sqlite\");
-  new DatabaseSync(\"/data/planflow.db\").exec(\"VACUUM INTO \x27/data/backup.db\x27\")"'
-scp iord@thundertrident:planflow/data/backup.db ~/planflow-backup-$(date +%F).db
+ssh iord@thundertrident '~/homelab/postgres/backup.sh'
+ssh iord@thundertrident 'docker exec -i postgres pg_restore -U postgres -d planflow --clean --if-exists \
+  < /mnt/immich-storage/postgres-backups/2026-09-03_00-30/planflow.dump'
 ```
 
-Or stop the container and copy `data/planflow.db` directly. To restore, stop the
-container, replace `data/planflow.db`, delete `data/planflow.db-wal` and
-`data/planflow.db-shm` if present, and start again.
+To look at the data directly, open Adminer at http://thundertrident:8091 and log in with
+the user and password from `~/planflow/.env`.
+
+Before 2026-09-03 the app stored its data in a SQLite file; `scripts/migrate-sqlite.js`
+is the one-off importer that moved it into Postgres.
 
 ## Troubleshooting
 
 - **Container keeps restarting**: `docker compose logs planflow`. A syntax error in
   `server.js` shows up here. Run `node --check server.js` locally.
-- **"permission denied" on the database**: the container runs as uid 1000 (`user:` in
-  the compose file), which is `iord` on the server. `data/` must be writable by that
-  user: `chown -R 1000:1000 ~/planflow/data`.
+- **`startup failed` / `postgres not ready` in the logs**: the container cannot reach
+  the database. Check `docker ps` shows `postgres` healthy, that `~/planflow/.env` has
+  the right `DATABASE_URL` (host `postgres`, not `thundertrident`, from inside a
+  container), and that the `homelab` network exists (`docker network ls`). The app
+  retries for a minute and then exits; Docker restarts it.
 - **Port already in use**: something else took 8090. `ss -tlnp | grep 8090` on the
   server, then change the port as above.
 - **Old page after deploy**: a hard refresh (Ctrl+Shift+R). Files are sent with

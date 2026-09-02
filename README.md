@@ -5,7 +5,7 @@ box's blue handle onto another box to say "that one waits for this one". A task 
 up **Ready** when everything it waits for is done, and the side panel always lists what
 you can start right now.
 
-Zero dependencies: Node's built-in HTTP server and `node:sqlite`. Vanilla JS frontend.
+Node's built-in HTTP server, PostgreSQL through the `pg` driver (the only dependency), vanilla JS frontend.
 
 - **[HOW-IT-WORKS.md](HOW-IT-WORKS.md)**: using the board, the ready/blocked/done rules, and what the code does.
 - **[DEVELOPMENT.md](DEVELOPMENT.md)**: running locally, making changes, deploying to thundertrident, backups.
@@ -13,19 +13,22 @@ Zero dependencies: Node's built-in HTTP server and `node:sqlite`. Vanilla JS fro
 ## Run
 
 ```sh
-node server.js                 # http://localhost:8090, data in ./data/planflow.db
-PORT=9000 DB_PATH=/tmp/x.db node server.js
+npm install
+DATABASE_URL=postgres://planflow:secret@thundertrident:5432/planflow node server.js   # http://localhost:8090
+PORT=9000 DATABASE_URL=... node server.js
 ```
 
-Needs Node 22.13+ (for `node:sqlite`).
+Needs Node 22+ and a PostgreSQL database; it creates its own tables on first start.
 
 ## Deploy (Docker)
 
 ```sh
-docker compose up -d --build   # serves on :8090, database in ./data/
+echo DATABASE_URL=postgres://planflow:secret@postgres:5432/planflow > .env
+docker compose up -d --build   # serves on :8090, talks to Postgres over the `homelab` docker network
 ```
 
-Backup = copy `data/planflow.db` (stop the container first, or use `sqlite3 data/planflow.db ".backup out.db"`).
+On thundertrident the database is the shared Postgres from the `homelab` repo, which
+dumps every database to the HDD every six hours. See [DEVELOPMENT.md](DEVELOPMENT.md).
 
 ## Using it
 

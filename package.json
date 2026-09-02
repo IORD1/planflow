@@ -1,0 +1,16 @@
+{
+  "name": "planflow",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Dependency-aware todo board: tasks on a canvas, links mean \"B waits for A\"",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "pg": "^8.16.0"
+  }
+}

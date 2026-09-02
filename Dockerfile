@@ -1,8 +1,10 @@
 FROM node:24-alpine
 WORKDIR /app
-COPY server.js ./
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev && npm cache clean --force
+COPY server.js db.js ./
+COPY scripts ./scripts
 COPY public ./public
-ENV NODE_ENV=production PORT=8090 DB_PATH=/data/planflow.db
+ENV NODE_ENV=production PORT=8090
 EXPOSE 8090
-VOLUME ["/data"]
-CMD ["node", "--no-warnings", "server.js"]
+CMD ["node", "server.js"]
