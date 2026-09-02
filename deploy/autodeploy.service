@@ -1,0 +1,11 @@
+[Unit]
+Description=Deploy git-backed apps when their remote branch moves
+After=network-online.target snap.docker.dockerd.service docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=iord
+Environment=HOME=/home/iord
+Environment=PATH=/snap/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/local/bin/autodeploy

@@ -5,9 +5,10 @@
 | Place | What |
 | --- | --- |
 | `~/Project/planflow` on the laptop | the source. Edit here |
-| `~/planflow` on thundertrident | the deployed copy, synced from the laptop |
+| `~/planflow` on thundertrident | the deployed copy, a git clone that auto-updates from GitHub |
 | `~/planflow/data/planflow.db` on thundertrident | the live database (plus `-wal` and `-shm` files) |
 | http://thundertrident:8090 | the running app, reachable on the Tailscale network |
+| https://github.com/IORD1/planflow | the repo. Pushing to `main` deploys |
 
 Project layout:
 
@@ -18,6 +19,7 @@ public/app.js        all frontend logic
 public/style.css     all styling (colour tokens at the top in :root)
 Dockerfile           node:24-alpine, copies server.js + public/
 docker-compose.yml   one service, port 8090, ./data mounted at /data
+deploy/              auto-deploy script, systemd units and config used on the server
 data/                local database when running outside Docker (git-ignored)
 ```
 
@@ -78,32 +80,59 @@ curl -s -X POST $B/api/boards/1/tasks -H 'Content-Type: application/json' -d '{"
 
 ## Deploying to thundertrident
 
-The server is reached as `iord@thundertrident` over Tailscale. Docker and Compose are
-already there and `iord` can use Docker without sudo.
+**Deploys are automatic.** Push to `main` and thundertrident rebuilds within a minute:
 
-1. Sync the source (never sync `data/`, that is the live database):
+```sh
+git push
+```
 
-   ```sh
-   rsync -az --delete --exclude data --exclude .git ~/Project/planflow/ iord@thundertrident:planflow/
-   ```
+That is the whole deploy. What happens on the server:
 
-2. Rebuild and restart the container:
+1. A systemd timer (`autodeploy.timer`) runs `/usr/local/bin/autodeploy` every minute.
+2. The script reads `/etc/autodeploy.conf`, one app per line. For each, it runs
+   `git fetch` in that directory using a read-only deploy key.
+3. If `origin/main` has moved, it does `git reset --hard origin/main` and
+   `docker compose up -d --build --remove-orphans`, then prunes old images.
+4. Nothing happens when there is no new commit, so the timer is cheap.
 
-   ```sh
-   ssh iord@thundertrident 'cd ~/planflow && docker compose up -d --build'
-   ```
+The server checkout is `~/planflow` on thundertrident, a normal git clone whose remote
+uses the SSH alias `github.com-planflow` (see `~/.ssh/config` there). The database in
+`~/planflow/data/` is git-ignored, so a reset never touches it.
 
-   The build takes a few seconds. Existing data is untouched because it lives in the
-   mounted `./data` folder, not in the image.
+The script and unit files are kept in this repo under `deploy/` so the setup can be
+rebuilt or copied to another machine.
 
-3. Check it:
+### Checking a deploy
 
-   ```sh
-   curl http://thundertrident:8090/api/health        # {"ok":true}
-   ssh iord@thundertrident 'docker logs --tail 20 planflow'
-   ```
+```sh
+ssh iord@thundertrident 'journalctl -u autodeploy -n 20 --no-pager'   # what it did and when
+ssh iord@thundertrident 'cd ~/planflow && git log -1 --oneline'        # commit running on the server
+ssh iord@thundertrident 'systemctl list-timers autodeploy.timer'       # next check time
+curl http://thundertrident:8090/api/health                             # {"ok":true}
+```
 
-Frontend-only changes still need step 2, since the files are copied into the image.
+A failed build logs `DEPLOY FAILED`; the previous container keeps running in that case.
+Fix the problem, push again, and the next tick retries.
+
+### Adding another app to auto-deploy
+
+1. Clone it on the server, e.g. `git clone git@github.com-<app>:IORD1/<app>.git ~/<app>`,
+   with its own deploy key and `~/.ssh/config` alias (GitHub allows a deploy key on one
+   repo only). Generate the key with `ssh-keygen -t ed25519 -f ~/.ssh/<app>_deploy -N ''`
+   and add it with `gh repo deploy-key add ~/.ssh/<app>_deploy.pub --repo IORD1/<app>`
+   from the laptop.
+2. Make sure the repo has a `docker-compose.yml` at its root.
+3. Add a line to `/etc/autodeploy.conf`: `/home/iord/<app> main`.
+
+### Manual deploy (fallback)
+
+If the timer is stopped or you want to deploy a branch by hand:
+
+```sh
+ssh iord@thundertrident 'cd ~/planflow && git fetch && git reset --hard origin/main && docker compose up -d --build'
+```
+
+Or run the script once: `ssh iord@thundertrident 'sudo systemctl start autodeploy.service'`.
 
 Useful commands on the server (all from `~/planflow`):
 
@@ -113,6 +142,7 @@ docker compose logs -f            # follow logs
 docker compose restart
 docker compose down               # stop and remove the container, keeps data/
 docker compose up -d              # start again without rebuilding
+sudo systemctl stop autodeploy.timer    # pause auto-deploys; start to resume
 ```
 
 ### Changing the port

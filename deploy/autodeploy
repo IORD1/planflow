@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# autodeploy: for each app listed in the config, fetch its git remote and, if the
+# remote branch moved, reset to it and rebuild the Docker Compose project.
+# Runs from a systemd timer every minute. Logs go to the journal:
+#   journalctl -u autodeploy -n 50
+set -uo pipefail
+CONF="${AUTODEPLOY_CONF:-/etc/autodeploy.conf}"
+exec 9>/tmp/autodeploy.lock
+flock -n 9 || { echo "another run is still in progress, skipping"; exit 0; }
+log() { printf '%s %s\n' "$(date '+%F %T')" "$*"; }
+[ -r "$CONF" ] || { log "no config at $CONF"; exit 1; }
+
+status=0
+mapfile -t lines < "$CONF"
+for line in "${lines[@]}"; do
+  read -r dir branch _ <<< "$line"
+  [[ -z "${dir:-}" || "$dir" == \#* ]] && continue
+  branch="${branch:-main}"
+  if [ ! -d "$dir/.git" ]; then log "$dir: not a git repo, skipping"; status=1; continue; fi
+  cd "$dir" || { status=1; continue; }
+  if ! out=$(git fetch -q origin "$branch" 2>&1 </dev/null); then log "$dir: fetch failed: $out"; status=1; continue; fi
+  local_rev=$(git rev-parse HEAD)
+  remote_rev=$(git rev-parse "origin/$branch")
+  [ "$local_rev" = "$remote_rev" ] && continue
+  log "$dir: ${local_rev:0:7} -> ${remote_rev:0:7}, deploying"
+  if git reset -q --hard "origin/$branch" </dev/null && docker compose up -d --build --remove-orphans </dev/null 2>&1 | tail -n 3; then
+    docker image prune -f >/dev/null 2>&1 </dev/null
+    log "$dir: deployed $(git log -1 --format='%h %s')"
+  else
+    log "$dir: DEPLOY FAILED (still on ${local_rev:0:7}? check: docker compose logs)"
+    status=1
+  fi
+done
+exit $status
