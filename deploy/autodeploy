@@ -16,7 +16,8 @@ for line in "${lines[@]}"; do
   read -r dir branch _ <<< "$line"
   [[ -z "${dir:-}" || "$dir" == \#* ]] && continue
   branch="${branch:-main}"
-  if [ ! -d "$dir/.git" ]; then log "$dir: not a git repo, skipping"; status=1; continue; fi
+  # The dir may be a subfolder of a repo (one repo, several compose stacks), so ask git.
+  if ! git -C "$dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then log "$dir: not inside a git repo, skipping"; status=1; continue; fi
   cd "$dir" || { status=1; continue; }
   if ! out=$(git fetch -q origin "$branch" 2>&1 </dev/null); then log "$dir: fetch failed: $out"; status=1; continue; fi
   local_rev=$(git rev-parse HEAD)
