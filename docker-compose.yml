@@ -1,0 +1,15 @@
+services:
+  planflow:
+    build: .
+    container_name: planflow
+    restart: unless-stopped
+    user: "1000:1000"
+    ports:
+      - "8090:8090"
+    volumes:
+      - ./data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8090/api/health"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
