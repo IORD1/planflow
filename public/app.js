@@ -178,20 +178,54 @@
     return { p1: { x: a.x + dx, y: a.y }, p2: { x: b.x - dx, y: b.y } };
   }
   function pathD(a, b) { const { p1, p2 } = bezier(a, b); return `M ${a.x} ${a.y} C ${p1.x} ${p1.y}, ${p2.x} ${p2.y}, ${b.x} ${b.y}`; }
-  function midpoint(a, b) { const { p1, p2 } = bezier(a, b); return { x: (a.x + 3 * p1.x + 3 * p2.x + b.x) / 8, y: (a.y + 3 * p1.y + 3 * p2.y + b.y) / 8 }; }
+  const EDGE_PAD = 10;   // how close a link may come to a card it is not attached to
+  function bezierAt(a, p1, p2, b, t) {
+    const m = 1 - t;
+    return { x: m * m * m * a.x + 3 * m * m * t * p1.x + 3 * m * t * t * p2.x + t * t * t * b.x,
+             y: m * m * m * a.y + 3 * m * m * t * p1.y + 3 * m * t * t * p2.y + t * t * t * b.y };
+  }
+  // Path for a link. If the plain curve would run under another card, detour above or
+  // below it so the link stays visible (e.g. a link that skips a column after Arrange).
+  function edgePath(fromId, toId) {
+    const a = anchors(fromId).out, b = anchors(toId).in;
+    if (b.x - a.x < 60) return pathD(a, b);                 // backwards or very short: plain curve
+    const { p1, p2 } = bezier(a, b);
+    const hits = [];
+    for (const [id, el] of nodeEls) {
+      if (id === fromId || id === toId) continue;
+      const t = state.tasks.get(id);
+      const r = { l: t.x - EDGE_PAD, t: t.y - EDGE_PAD, r: t.x + el.offsetWidth + EDGE_PAD, b: t.y + el.offsetHeight + EDGE_PAD };
+      if (r.r <= a.x || r.l >= b.x) continue;
+      for (let i = 1; i < 24; i++) {
+        const p = bezierAt(a, p1, p2, b, i / 24);
+        if (p.x > r.l && p.x < r.r && p.y > r.t && p.y < r.b) { hits.push(r); break; }
+      }
+    }
+    if (!hits.length) return pathD(a, b);
+    const top = Math.min(...hits.map((r) => r.t)), bottom = Math.max(...hits.map((r) => r.b));
+    const mid = (a.y + b.y) / 2;
+    const y = (mid - top) <= (bottom - mid) ? top - 4 : bottom + 4;
+    const x1 = Math.max(Math.min(...hits.map((r) => r.l)), a.x + 30);
+    const x2 = Math.min(Math.max(...hits.map((r) => r.r)), b.x - 30);
+    const d1 = Math.max(30, (x1 - a.x) * 0.5), d2 = Math.max(30, (b.x - x2) * 0.5);
+    if (x2 - x1 < 10) {
+      const xm = (x1 + x2) / 2;
+      return `M ${a.x} ${a.y} C ${a.x + d1} ${a.y}, ${xm - d1} ${y}, ${xm} ${y} C ${xm + d2} ${y}, ${b.x - d2} ${b.y}, ${b.x} ${b.y}`;
+    }
+    return `M ${a.x} ${a.y} C ${a.x + d1} ${a.y}, ${x1 - d1} ${y}, ${x1} ${y} L ${x2} ${y} C ${x2 + d2} ${y}, ${b.x - d2} ${b.y}, ${b.x} ${b.y}`;
+  }
   function renderEdges() {
     edgeLayer.replaceChildren();
     edgeUnlink.hidden = true;
     for (const d of state.deps) {
       if (!nodeEls.has(d.from) || !nodeEls.has(d.to)) continue;
-      const a = anchors(d.from).out, b = anchors(d.to).in;
       const sel = isSel('edge', d);
       const kind = sel ? 'selected' : state.tasks.get(d.from).status === 'done' ? 'satisfied' : 'pending';
-      edgeLayer.append(
-        svgEl('path', { d: pathD(a, b), class: `edge ${kind}`, 'marker-end': `url(#arrow-${kind})` }),
-        svgEl('path', { d: pathD(a, b), class: 'edge-hit', 'data-from': d.from, 'data-to': d.to }));
+      const dAttr = edgePath(d.from, d.to);
+      const p = svgEl('path', { d: dAttr, class: `edge ${kind}`, 'marker-end': `url(#arrow-${kind})` });
+      edgeLayer.append(p, svgEl('path', { d: dAttr, class: 'edge-hit', 'data-from': d.from, 'data-to': d.to }));
       if (sel) {
-        const m = midpoint(a, b);
+        const m = p.getPointAtLength(p.getTotalLength() / 2);
         edgeUnlink.style.left = m.x + 'px'; edgeUnlink.style.top = m.y + 'px'; edgeUnlink.hidden = false;
       }
     }
@@ -358,6 +392,7 @@
   // ---------------------------------------------------------------- auto arrange
   async function arrange() {
     const tasks = [...state.tasks.values()]; if (!tasks.length) return;
+    // 1. Column = longest chain of blockers behind the task.
     const layer = new Map();
     const depth = (id, stack) => {
       if (layer.has(id)) return layer.get(id);
@@ -369,30 +404,47 @@
       return d;
     };
     for (const t of tasks) depth(t.id, new Set());
-    const cols = [];
-    for (const t of tasks) (cols[layer.get(t.id)] ||= []).push(t);
-    const row = new Map();
-    const bary = (t) => { const bs = blockersOf(t.id).filter((b) => row.has(b.id)); return bs.length ? bs.reduce((s, b) => s + row.get(b.id), 0) / bs.length : 0; };
-    cols.forEach((col, ci) => {
-      col.sort((a, b) => (ci ? bary(a) - bary(b) : 0) || a.id - b.id);
-      col.forEach((t, i) => row.set(t.id, i));
-    });
     const GAP_X = 90, GAP_Y = 28, X0 = 40, Y0 = 40;
     const hOf = (t) => nodeEls.get(t.id).offsetHeight;
-    const colH = cols.map((col) => col.reduce((s, t) => s + hOf(t), 0) + GAP_Y * (col.length - 1));
-    const maxH = Math.max(...colH);
-    const positions = [];
+    // 2. Items per column: the real cards plus zero-height "lane" items for every link that
+    //    skips a column, so such a link gets free space instead of running under a card.
+    const cols = [], items = new Map();
+    const add = (it) => { items.set(it.key, it); (cols[it.col] ||= []).push(it); return it; };
+    for (const t of tasks) add({ key: 't' + t.id, task: t, h: hOf(t), col: layer.get(t.id), preds: [] });
+    let lanes = 0;
+    for (const d of state.deps) {
+      const u = items.get('t' + d.from), v = items.get('t' + d.to); if (!u || !v) continue;
+      let prev = u;
+      for (let c = u.col + 1; c < v.col; c++) prev = add({ key: 'l' + lanes++, lane: true, h: 0, col: c, preds: [prev.key] });
+      v.preds.push(prev.key);
+    }
+    // 3. Place column by column. Each item wants to sit level with the average centre of the
+    //    items it follows (all in earlier columns); items are stacked in that order without
+    //    overlapping. Lanes sort before cards on ties so a skipping link passes above the card.
+    const centre = (it) => it.y + it.h / 2;
     cols.forEach((col, ci) => {
-      let y = Y0 + (maxH - colH[ci]) / 2;
-      for (const t of col) { positions.push({ id: t.id, x: X0 + ci * (NODE_W + GAP_X), y: Math.round(y) }); y += hOf(t) + GAP_Y; }
+      for (const it of col) {
+        const ps = it.preds.map((k) => items.get(k));
+        it.bary = ps.length ? ps.reduce((sum, p) => sum + centre(p), 0) / ps.length : 0;
+      }
+      col.sort((p, q) => (p.bary - q.bary) || ((p.lane ? 0 : 1) - (q.lane ? 0 : 1)) || ((p.task ? p.task.id : 0) - (q.task ? q.task.id : 0)));
+      let bottom = null;
+      for (const it of col) {
+        const want = ci === 0 ? (bottom === null ? Y0 : bottom + GAP_Y) : it.bary - it.h / 2;
+        it.y = bottom === null ? want : Math.max(want, bottom + GAP_Y);
+        bottom = it.y + it.h;
+      }
     });
+    const positions = [];
+    for (const it of items.values()) if (it.task) positions.push({ id: it.task.id, x: X0 + it.col * (NODE_W + GAP_X), y: Math.round(it.y) });
+    // 4. Animate into place, then save.
     nodesLayer.classList.add('animate');
     for (const p of positions) {
       const t = state.tasks.get(p.id); t.x = p.x; t.y = p.y;
       const el = nodeEls.get(p.id); el.style.left = p.x + 'px'; el.style.top = p.y + 'px';
     }
     const start = performance.now();
-    const tick = () => { renderEdges(); if (performance.now() - start < 340) requestAnimationFrame(tick); else nodesLayer.classList.remove('animate'); };
+    const tick = () => { renderEdges(); if (performance.now() - start < 340) requestAnimationFrame(tick); else { nodesLayer.classList.remove('animate'); renderEdges(); } };
     requestAnimationFrame(tick);
     fitView(true);
     try { await api('POST', `/api/boards/${state.boardId}/positions`, { positions }); } catch (e) { toast(e.message); }

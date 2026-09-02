@@ -39,7 +39,7 @@ Rules that follow from this:
 | Reopen a task | click the green circle again, or `Reopen` in the panel |
 | Delete a task | right-click it and choose `Delete task`, or select it and press `Delete`, or use the panel button |
 | Add the next step | right-click a task and choose `Add next step`. A new task appears to its right, already linked |
-| Tidy the layout | `Arrange` or `A`. Columns by dependency depth |
+| Tidy the layout | `Arrange` or `A`. Columns by dependency depth; links that skip a column get their own lane |
 | See everything | `Fit` or `F` |
 | Zoom | scroll wheel, or pinch on a phone |
 | Pan | drag empty canvas, or drag with the middle button |
@@ -140,10 +140,18 @@ Vanilla JavaScript, one file, no build step. The important pieces:
   any gesture in progress and opens the menu for whatever is under the pointer.
 - **Saving** is immediate for moves, links, and done toggles (one request each). Title
   and notes edits are debounced half a second so typing does not spam the server.
-- **Arrange** computes each task's depth (longest chain of blockers behind it), puts
-  each depth in a column, orders each column by the average row of its blockers to
-  reduce crossings, then stacks boxes using their real rendered heights and sends all
-  positions to the server in one request.
+- **Arrange** computes each task's depth (longest chain of blockers behind it) and puts
+  each depth in a column. A link that skips columns (A → C while A → B → C also exists)
+  gets an invisible zero-height "lane" item in every column it skips, so the cards in
+  those columns are pushed aside and the link has clear space instead of running under
+  a card. Each column is then ordered so every item sits level with the average centre
+  of the items it follows, stacked without overlapping using real rendered heights, and
+  all positions are sent to the server in one request.
+- **Link routing**: before drawing a link, the app samples the curve and checks whether
+  it would pass under any card it is not attached to (with a 10 px margin). If so, the
+  link is redrawn as a detour that goes over or under the offending cards, whichever is
+  closer. This keeps links visible in hand-made layouts too, for example when you drag a
+  card onto a straight link.
 - **Refresh**: when the tab becomes visible again the board is reloaded from the server,
   so changes made from your phone show up on the laptop when you come back to it.
 
