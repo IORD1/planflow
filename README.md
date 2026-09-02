@@ -31,11 +31,12 @@ Backup = copy `data/planflow.db` (stop the container first, or use `sqlite3 data
 
 | Action | How |
 | --- | --- |
-| Add a task | `+ Task`, press `N`, or double-click empty canvas |
+| Add a task | `+ Task`, press `N`, double-click or middle-click empty canvas, or right-click → `Add task here` |
 | Move a task | drag it |
 | Make B wait for A | drag A's blue ● handle onto B |
-| Remove a link | click the link, then `Unlink` (or `Del`) |
+| Remove a link | click or right-click the link, then `Unlink` |
 | Complete a task | click its circle (only when nothing it waits for is unfinished) |
+| Task menu | right-click a task: mark done, add next step, delete |
 | Edit title / notes | click the task, edit in the side panel |
 | Tidy the layout | `Arrange` / `A` — columns by dependency depth |
 | Zoom / pan | scroll wheel or pinch / drag empty space, `F` fits everything |

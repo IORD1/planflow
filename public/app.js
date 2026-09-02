@@ -278,16 +278,18 @@
       h('div', { class: 'tips' },
         h('div', {}, h('kbd', {}, 'N'), ' new task · ', h('kbd', {}, 'A'), ' arrange · ', h('kbd', {}, 'F'), ' fit view'),
         h('div', {}, h('kbd', {}, 'Del'), ' remove selected task or link · ', h('kbd', {}, 'Esc'), ' deselect'),
+        h('div', {}, 'Right-click a task, a link, or empty space for a menu · middle-click adds a task under the cursor.'),
         h('div', {}, 'A link A → B means B waits for A. Tasks light up blue when everything they wait for is done.')));
   }
 
   // ---------------------------------------------------------------- mutations
-  async function createTask(x, y) {
+  async function createTask(x, y, opts = {}) {
     try {
       const t = await api('POST', `/api/boards/${state.boardId}/tasks`, { title: 'New task', x: Math.round(x), y: Math.round(y) });
       state.tasks.set(t.id, t);
       const el = makeNode(t); nodesLayer.appendChild(el); nodeEls.set(t.id, el);
       renderProgress();
+      if (opts.after && state.tasks.has(opts.after)) await addDep(opts.after, t.id, { quiet: true });
       select({ type: 'task', id: t.id }, { focusTitle: !isMobile() });
       if (isMobile()) { const inp = $('.title-input', panel); if (inp) { inp.focus(); inp.select(); } }
     } catch (e) { toast(e.message); }
@@ -329,7 +331,7 @@
       if (isMobile()) panel.classList.remove('open');
     } catch (e) { toast(e.message); }
   }
-  async function addDep(from, to) {
+  async function addDep(from, to, opts = {}) {
     if (from === to) return;
     if (state.deps.some((d) => d.from === from && d.to === to)) { toast('Already linked.'); return; }
     if (reaches(to, from)) { toast("Can't link: that would make a loop."); return; }
@@ -337,7 +339,7 @@
       await api('POST', `/api/boards/${state.boardId}/deps`, { from, to });
       state.deps.push({ from, to });
       refreshNodes();
-      toast(`"${titleOf(to)}" now waits for "${titleOf(from)}"`);
+      if (!opts.quiet) toast(`"${titleOf(to)}" now waits for "${titleOf(from)}"`);
     } catch (e) { toast(e.message); }
   }
   async function deleteDep(from, to) {
@@ -427,13 +429,16 @@
     try { viewport.setPointerCapture(e.pointerId); } catch {}
     if (pointers.size === 2 && e.pointerType === 'touch') { startPinch(); return; }
     if (pointers.size > 1) return;
-    boardMenu.hidden = true;
+    boardMenu.hidden = true; hideCtx();
     const nodeEl = e.target.closest('.node');
     const hit = e.target.closest('.edge-hit');
     const base = { pid: e.pointerId, sx: e.clientX, sy: e.clientY, moved: false };
-    if (nodeEl && e.target.closest('.port')) {
+    if (e.button === 1) {                                          // middle: drag pans, click adds a task
+      gesture = { ...base, type: 'pan', ox: state.view.x, oy: state.view.y, middle: true };
+      viewport.classList.add('panning');
+    } else if (nodeEl && e.target.closest('.port')) {
       gesture = { ...base, type: 'link', from: +nodeEl.dataset.id, cur: null };
-    } else if (nodeEl && e.button !== 1) {
+    } else if (nodeEl) {
       const t = state.tasks.get(+nodeEl.dataset.id);
       gesture = { ...base, type: 'node', id: t.id, ox: t.x, oy: t.y };
       nodeEl.classList.add('dragging');
@@ -490,7 +495,11 @@
     const g = gesture; gesture = null;
     viewport.classList.remove('panning');
     switch (g.type) {
-      case 'pan': if (!g.moved) select(null); break;
+      case 'pan':
+        if (g.moved) break;
+        if (g.middle) { const w = clientToWorld(e.clientX, e.clientY); createTask(w.x - NODE_W / 2, w.y - 24); }
+        else select(null);
+        break;
       case 'edge': select({ type: 'edge', from: g.from, to: g.to }); break;
       case 'node': finishNodeDrag(g); break;
       case 'link': {
@@ -507,7 +516,7 @@
   viewport.addEventListener('pointerup', endPointer);
   viewport.addEventListener('pointercancel', endPointer);
   viewport.addEventListener('wheel', (e) => {
-    e.preventDefault();
+    e.preventDefault(); hideCtx();
     const dy = e.deltaMode === 1 ? e.deltaY * 20 : e.deltaMode === 2 ? e.deltaY * 400 : e.deltaY;
     zoomAt(e.clientX, e.clientY, Math.exp(-dy * (e.ctrlKey ? 0.01 : 0.0018)));
   }, { passive: false });
@@ -523,13 +532,70 @@
   });
   edgeUnlink.addEventListener('click', () => { const s = state.selected; if (s && s.type === 'edge') deleteDep(s.from, s.to); });
 
+  // ---------------------------------------------------------------- context menu (right click / long press)
+  const ctxMenu = h('div', { class: 'menu ctx', hidden: true });
+  document.body.appendChild(ctxMenu);
+  function hideCtx() { ctxMenu.hidden = true; }
+  function showCtx(items, cx, cy) {
+    ctxMenu.replaceChildren(...items.map((it) => it === '-' ? h('div', { class: 'sep' })
+      : h('button', { class: it.danger ? 'danger' : '', disabled: !!it.disabled, title: it.title,
+        onclick: () => { hideCtx(); it.run(); } }, it.label)));
+    ctxMenu.hidden = false;
+    ctxMenu.style.left = Math.max(4, Math.min(cx, window.innerWidth - ctxMenu.offsetWidth - 4)) + 'px';
+    ctxMenu.style.top = Math.max(4, Math.min(cy, window.innerHeight - ctxMenu.offsetHeight - 4)) + 'px';
+  }
+  function cancelGesture() {
+    if (!gesture) return;
+    if (gesture.type === 'node') nodeEls.get(gesture.id)?.classList.remove('dragging');
+    if (gesture.type === 'link') setDropTarget(null);
+    gesture = null; pointers.clear();
+    viewport.classList.remove('panning');
+    renderEdges();
+  }
+  viewport.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    if (e.target.closest('#edgeUnlink')) return;
+    cancelGesture();
+    boardMenu.hidden = true;
+    const nodeEl = e.target.closest('.node');
+    const hit = e.target.closest('.edge-hit');
+    if (nodeEl) {
+      const id = +nodeEl.dataset.id, t = state.tasks.get(id); if (!t) return;
+      select({ type: 'task', id });
+      const st = stateOf(t);
+      showCtx([
+        st === 'done' ? { label: 'Reopen', run: () => setDone(id, false) }
+          : st === 'blocked' ? { label: 'Mark done anyway', title: 'It still waits for unfinished tasks', run: () => setDone(id, true, true) }
+          : { label: 'Mark done', run: () => setDone(id, true) },
+        { label: 'Add next step \u2192', title: 'New task to the right that waits for this one', run: () => createTask(t.x + NODE_W + 90, t.y, { after: id }) },
+        '-',
+        { label: 'Delete task', danger: true, run: () => deleteTask(id) },
+      ], e.clientX, e.clientY);
+    } else if (hit) {
+      const from = +hit.dataset.from, to = +hit.dataset.to;
+      select({ type: 'edge', from, to });
+      showCtx([{ label: 'Unlink', danger: true, run: () => deleteDep(from, to) }], e.clientX, e.clientY);
+    } else {
+      const w = clientToWorld(e.clientX, e.clientY);
+      showCtx([
+        { label: 'Add task here', run: () => createTask(w.x - NODE_W / 2, w.y - 24) },
+        '-',
+        { label: 'Arrange', run: arrange },
+        { label: 'Fit view', run: () => fitView(true) },
+      ], e.clientX, e.clientY);
+    }
+  });
+  // Stop the browser's middle-click autoscroll / paste so middle-click can mean "new task".
+  viewport.addEventListener('mousedown', (e) => { if (e.button === 1) e.preventDefault(); });
+  viewport.addEventListener('auxclick', (e) => e.preventDefault());
+
   // ---------------------------------------------------------------- keyboard
   document.addEventListener('keydown', (e) => {
     const inField = e.target.matches('input, textarea, select') || e.target.isContentEditable;
     if (inField) { if (e.key === 'Escape') e.target.blur(); return; }
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     switch (e.key) {
-      case 'Escape': select(null); boardMenu.hidden = true; break;
+      case 'Escape': select(null); boardMenu.hidden = true; hideCtx(); break;
       case 'Delete': case 'Backspace': e.preventDefault(); deleteSelected(); break;
       case 'n': case 'N': e.preventDefault(); addAtCenter(); break;
       case 'f': case 'F': fitView(true); break;
@@ -585,7 +651,8 @@
     const act = e.target.closest('button')?.dataset.act; boardMenu.hidden = true;
     if (act === 'new') newBoard(); else if (act === 'rename') renameBoard(); else if (act === 'delete') deleteBoard();
   });
-  document.addEventListener('click', (e) => { if (!e.target.closest('#boardMenu, #btnBoardMenu')) boardMenu.hidden = true; });
+  document.addEventListener('click', (e) => { if (!e.target.closest('#boardMenu, #btnBoardMenu')) boardMenu.hidden = true; if (!e.target.closest('.menu.ctx')) hideCtx(); });
+  window.addEventListener('resize', hideCtx);
 
   $('#btnAdd').addEventListener('click', addAtCenter);
   $('#btnArrange').addEventListener('click', arrange);

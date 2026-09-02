@@ -180,6 +180,9 @@ main { flex: 1; display: flex; min-height: 0; }
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
 }
 .menu[hidden] { display: none; }
+.menu.ctx { position: fixed; }
+.menu .sep { height: 1px; background: var(--border); margin: 4px 2px; }
+.menu button:disabled { opacity: 0.5; cursor: default; }
 .menu button { background: none; border: none; text-align: left; padding: 8px 10px; border-radius: 6px; }
 .menu button:hover { background: #1c232d; }
 #toast {

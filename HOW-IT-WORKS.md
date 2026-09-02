@@ -30,22 +30,36 @@ Rules that follow from this:
 
 | What you want | How |
 | --- | --- |
-| Add a task | `+ Task` button, press `N`, or double-click empty canvas |
+| Add a task | `+ Task` button, press `N`, double-click or **middle-click** empty canvas, or right-click it and choose `Add task here` |
 | Rename it, add notes | click the task, edit in the side panel. Saves as you type |
 | Move a task | drag it anywhere |
 | Make B wait for A | drag A's blue **●** handle (right edge) and drop it on B |
-| Remove a link | click the link line, then press `Unlink` (or `Delete`) |
-| Finish a task | click the circle on the box, or `Mark done` in the panel |
+| Remove a link | click the link line, then press `Unlink` (or `Delete`), or right-click it and choose `Unlink` |
+| Finish a task | click the circle on the box, `Mark done` in the panel, or right-click the box |
 | Reopen a task | click the green circle again, or `Reopen` in the panel |
-| Delete a task | select it, press `Delete`, or use the panel button |
+| Delete a task | right-click it and choose `Delete task`, or select it and press `Delete`, or use the panel button |
+| Add the next step | right-click a task and choose `Add next step`. A new task appears to its right, already linked |
 | Tidy the layout | `Arrange` or `A`. Columns by dependency depth |
 | See everything | `Fit` or `F` |
 | Zoom | scroll wheel, or pinch on a phone |
-| Pan | drag empty canvas |
+| Pan | drag empty canvas, or drag with the middle button |
 | Deselect | click empty canvas or press `Esc` |
 
 While you drag a link, the box under your finger gets a blue dashed outline when the
 drop is allowed and a red one when it would make a loop or already exists.
+
+### Right-click menu
+
+Right-clicking (or long-pressing on a phone) opens a small menu that depends on what is
+under the pointer:
+
+- **Empty canvas**: `Add task here`, `Arrange`, `Fit view`.
+- **A task**: `Mark done` / `Reopen` (or `Mark done anyway` while it is blocked),
+  `Add next step`, and `Delete task`. Right-clicking also selects the task.
+- **A link**: `Unlink`.
+
+A **middle-click** on the canvas adds a task under the pointer. Dragging with the middle
+button pans instead, so nothing is added unless the pointer stays still.
 
 ## The side panel
 
@@ -119,9 +133,11 @@ Vanilla JavaScript, one file, no build step. The important pieces:
 - **Gestures** all go through pointer events on `#viewport`, so mouse and touch behave
   the same. A pointer-down decides what it is: on a **●** handle it starts a link drag;
   on a box it starts a move; on a link line it selects it; on empty canvas it pans.
-  A pointer that moves less than 4 px counts as a click (select or deselect). Two
-  touch pointers switch to a pinch-zoom around the midpoint. Wheel events zoom around
-  the cursor.
+  A pointer that moves less than 4 px counts as a click (select or deselect). The middle
+  button starts a pan too, and if it never moves the release adds a task under the
+  pointer. Two touch pointers switch to a pinch-zoom around the midpoint. Wheel events
+  zoom around the cursor. The `contextmenu` event (right-click or long-press) cancels
+  any gesture in progress and opens the menu for whatever is under the pointer.
 - **Saving** is immediate for moves, links, and done toggles (one request each). Title
   and notes edits are debounced half a second so typing does not spam the server.
 - **Arrange** computes each task's depth (longest chain of blockers behind it), puts
