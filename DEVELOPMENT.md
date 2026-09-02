@@ -80,6 +80,43 @@ curl -s -X POST $B/api/boards/1/tasks -H 'Content-Type: application/json' -d '{"
 
 ## Deploying to thundertrident
 
+### Auto-deploy in plain words
+
+Nothing runs on the laptop. The laptop only pushes commits to GitHub.
+
+The checking job lives **on the server** (thundertrident). It is a systemd *timer*,
+which is the modern Ubuntu equivalent of a cron job. Every minute it wakes up, and for
+every app listed in `/etc/autodeploy.conf` it asks GitHub: "does `main` have a commit I
+don't have yet?"
+
+```
+ laptop                    GitHub                     thundertrident (server)
+ ------                    ------                     -----------------------
+ git push  ───────────►  IORD1/planflow             every 60 s, autodeploy.timer fires:
+                          main: 0d268c2   ◄───────   git fetch  ("any new commit on main?")
+                                                        │
+                                              no ◄──────┴──────► yes
+                                              exit                git reset --hard origin/main
+                                              (nothing            docker compose up -d --build
+                                               happens)           container now runs the new commit
+```
+
+So the answer to "which machine checks?" is: the server checks, by pulling. GitHub never
+contacts the server, which is why this works even though thundertrident has no public
+address and is only reachable over Tailscale.
+
+The timeline after a push is therefore:
+
+1. `git push` finishes on the laptop. GitHub has the commit.
+2. Within at most 60 seconds the timer on the server fires and notices the new commit.
+3. The server resets its checkout to that commit and rebuilds the image (about 5 to 10
+   seconds for this app). If the image actually changed, Compose replaces the running
+   container. If only docs changed, the image is identical and the container is left alone.
+4. The app on http://thundertrident:8090 is the new version.
+
+To watch it happen: `ssh iord@thundertrident 'journalctl -u autodeploy -f'` in one
+terminal, then push from another.
+
 **Deploys are automatic.** Push to `main` and thundertrident rebuilds within a minute:
 
 ```sh
