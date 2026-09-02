@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # autodeploy: for each app listed in the config, fetch its git remote and, if the
 # remote branch moved, reset to it and rebuild the Docker Compose project.
-# Runs from a systemd timer every minute. Logs go to the journal:
+# Runs from a systemd timer every 10 minutes. Logs go to the journal:
 #   journalctl -u autodeploy -n 50
 set -uo pipefail
 CONF="${AUTODEPLOY_CONF:-/etc/autodeploy.conf}"

@@ -1,10 +1,10 @@
 [Unit]
-Description=Check for new commits every minute
+Description=Check for new commits every 10 minutes
 
 [Timer]
 OnBootSec=90s
-OnUnitActiveSec=60s
-AccuracySec=5s
+OnUnitActiveSec=10min
+AccuracySec=30s
 
 [Install]
 WantedBy=timers.target

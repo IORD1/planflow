@@ -8,7 +8,7 @@
 | `~/planflow` on thundertrident | the deployed copy, a git clone that auto-updates from GitHub |
 | `~/planflow/data/planflow.db` on thundertrident | the live database (plus `-wal` and `-shm` files) |
 | http://thundertrident:8090 | the running app, reachable on the Tailscale network |
-| https://github.com/IORD1/planflow | the repo. Pushing to `main` deploys |
+| https://github.com/IORD1/planflow | the repo. Pushing to `main` deploys within 10 minutes |
 
 Project layout:
 
@@ -85,14 +85,14 @@ curl -s -X POST $B/api/boards/1/tasks -H 'Content-Type: application/json' -d '{"
 Nothing runs on the laptop. The laptop only pushes commits to GitHub.
 
 The checking job lives **on the server** (thundertrident). It is a systemd *timer*,
-which is the modern Ubuntu equivalent of a cron job. Every minute it wakes up, and for
+which is the modern Ubuntu equivalent of a cron job. Every 10 minutes it wakes up, and for
 every app listed in `/etc/autodeploy.conf` it asks GitHub: "does `main` have a commit I
 don't have yet?"
 
 ```
  laptop                    GitHub                     thundertrident (server)
  ------                    ------                     -----------------------
- git push  ───────────►  IORD1/planflow             every 60 s, autodeploy.timer fires:
+ git push  ───────────►  IORD1/planflow             every 10 min, autodeploy.timer fires:
                           main: 0d268c2   ◄───────   git fetch  ("any new commit on main?")
                                                         │
                                               no ◄──────┴──────► yes
@@ -108,7 +108,9 @@ address and is only reachable over Tailscale.
 The timeline after a push is therefore:
 
 1. `git push` finishes on the laptop. GitHub has the commit.
-2. Within at most 60 seconds the timer on the server fires and notices the new commit.
+2. Within at most 10 minutes the timer on the server fires and notices the new commit.
+   In a hurry? `ssh iord@thundertrident 'sudo systemctl start autodeploy.service'` runs
+   the check right now.
 3. The server resets its checkout to that commit and rebuilds the image (about 5 to 10
    seconds for this app). If the image actually changed, Compose replaces the running
    container. If only docs changed, the image is identical and the container is left alone.
@@ -117,7 +119,7 @@ The timeline after a push is therefore:
 To watch it happen: `ssh iord@thundertrident 'journalctl -u autodeploy -f'` in one
 terminal, then push from another.
 
-**Deploys are automatic.** Push to `main` and thundertrident rebuilds within a minute:
+**Deploys are automatic.** Push to `main` and thundertrident rebuilds within ten minutes:
 
 ```sh
 git push
@@ -125,7 +127,7 @@ git push
 
 That is the whole deploy. What happens on the server:
 
-1. A systemd timer (`autodeploy.timer`) runs `/usr/local/bin/autodeploy` every minute.
+1. A systemd timer (`autodeploy.timer`) runs `/usr/local/bin/autodeploy` every 10 minutes.
 2. The script reads `/etc/autodeploy.conf`, one app per line. For each, it runs
    `git fetch` in that directory using a read-only deploy key.
 3. If `origin/main` has moved, it does `git reset --hard origin/main` and
@@ -149,7 +151,9 @@ curl http://thundertrident:8090/api/health                             # {"ok":t
 ```
 
 A failed build logs `DEPLOY FAILED`; the previous container keeps running in that case.
-Fix the problem, push again, and the next tick retries.
+Fix the problem, push again, and the next tick retries. The interval lives in
+`deploy/autodeploy.timer` (`OnUnitActiveSec`); after changing it, reinstall the file to
+`/etc/systemd/system/` and run `sudo systemctl daemon-reload`.
 
 ### Adding another app to auto-deploy
 
