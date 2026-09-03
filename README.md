@@ -1,8 +1,8 @@
 # Planflow
 
 A todo board where tasks can block other tasks. Tasks are boxes on a canvas; drag one
-of a box's blue handles (one on each side) onto another box to say "that one waits for
-this one". A task lights
+of a box's blue handles (one per side, shown when the pointer comes near the box) onto
+another box to say "that one waits for this one". A task lights
 up **Ready** when everything it waits for is done, and the side panel always lists what
 you can start right now.
 
@@ -37,7 +37,7 @@ dumps every database to the HDD every six hours. See [DEVELOPMENT.md](DEVELOPMEN
 | --- | --- |
 | Add a task | `+ Task`, press `N`, double-click or middle-click empty canvas, or right-click → `Add task here` |
 | Move a task | drag it |
-| Make B wait for A | drag any of A's blue ● handles onto B; the arrow attaches to the side of B you drop nearest to |
+| Make B wait for A | move the mouse near A and drag any of its blue ● handles onto B; the arrow attaches to the side of B you drop nearest to |
 | Move an arrow to another side | click the link, then pick the sides in the side panel |
 | Remove a link | click or right-click the link, then `Unlink` |
 | Complete a task | click its circle (only when nothing it waits for is unfinished) |

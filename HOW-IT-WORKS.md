@@ -33,7 +33,7 @@ Rules that follow from this:
 | Add a task | `+ Task` button, press `N`, double-click or **middle-click** empty canvas, or right-click it and choose `Add task here` |
 | Rename it, add notes | click the task, edit in the side panel. Saves as you type |
 | Move a task | drag it anywhere |
-| Make B wait for A | drag one of A's blue **●** handles (there is one on each side of the box) and drop it on B. The arrow attaches to whichever side of B you drop nearest to |
+| Make B wait for A | move the mouse near A so its four blue **●** handles appear (one per side; on a phone, tap the box to select it), drag one of them and drop it on B. The arrow attaches to whichever side of B you drop nearest to |
 | Move an arrow to another side | click the link, then pick the sides in the side panel (`Leaves the first card from its…` / `Enters the second card at its…`) |
 | Remove a link | click the link line, then press `Unlink` (or `Delete`), or right-click it and choose `Unlink` |
 | Finish a task | click the circle on the box, `Mark done` in the panel, or right-click the box |

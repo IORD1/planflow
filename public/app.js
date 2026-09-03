@@ -551,6 +551,27 @@
       viewport.classList.add('panning');
     }
   });
+  // Link handles stay hidden until the mouse comes within NEAR_PX of a card (touch users
+  // see them on the selected card instead). Screen pixels, so it feels the same at any zoom.
+  const NEAR_PX = 28;
+  let nearPoint = null, nearRaf = null;
+  function updateNear() {
+    nearRaf = null;
+    const pad = NEAR_PX / state.view.s;
+    for (const [id, el] of nodeEls) {
+      const t = state.tasks.get(id);
+      const near = !!nearPoint && nearPoint.x >= t.x - pad && nearPoint.x <= t.x + el.offsetWidth + pad
+        && nearPoint.y >= t.y - pad && nearPoint.y <= t.y + el.offsetHeight + pad;
+      el.classList.toggle('near', near);
+    }
+  }
+  const scheduleNear = () => { if (!nearRaf) nearRaf = requestAnimationFrame(updateNear); };
+  viewport.addEventListener('pointermove', (e) => {
+    if (e.pointerType === 'touch') return;
+    nearPoint = clientToWorld(e.clientX, e.clientY); scheduleNear();
+  });
+  viewport.addEventListener('pointerleave', () => { nearPoint = null; scheduleNear(); });
+
   viewport.addEventListener('pointermove', (e) => {
     const p = pointers.get(e.pointerId); if (!p) return;
     p.x = e.clientX; p.y = e.clientY;

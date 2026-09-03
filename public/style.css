@@ -120,14 +120,14 @@ main { flex: 1; display: flex; min-height: 0; }
 .node.drop-bad { outline: 2px dashed var(--red); outline-offset: 3px; }
 .port {
   position: absolute; width: 18px; height: 18px; border-radius: 50%; background: var(--accent);
-  border: 3px solid var(--bg); cursor: crosshair; z-index: 2; opacity: 0.85;
+  border: 3px solid var(--bg); cursor: crosshair; z-index: 2;
+  opacity: 0; transition: opacity 0.12s, transform 0.12s;   /* hidden until the pointer comes near the card */
 }
 .port.right  { right: -10px; top: 50%; margin-top: -9px; }
 .port.left   { left: -10px; top: 50%; margin-top: -9px; }
 .port.top    { top: -10px; left: 50%; margin-left: -9px; }
 .port.bottom { bottom: -10px; left: 50%; margin-left: -9px; }
-.port.left, .port.top, .port.bottom { opacity: 0.35; }         /* quieter until the card is hovered or selected */
-.node:hover .port, .node.selected .port, .node.dragging .port, .node.drop-target .port { opacity: 1; }
+.node.near .port, .node:hover .port, .node.selected .port, .node.drop-target .port { opacity: 1; }
 .port::before { content: ""; position: absolute; inset: -12px; }   /* bigger invisible hit area */
 /* the three extra handles reach less far into the card so grabbing a card by its title still moves it */
 .port.left::before   { inset: -10px -2px -10px -10px; }

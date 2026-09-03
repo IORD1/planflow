@@ -88,6 +88,21 @@ try {
   assert.equal(await ev(`document.querySelectorAll('.node[data-id="${A.id}"] .port').length`), 4, 'each card has four ports');
   console.log('ok board open, 4 ports per card');
 
+  // 0. handles are hidden until the pointer comes near the card
+  {
+    const ra = await rect(A.id);
+    const opacity = () => ev(`getComputedStyle(document.querySelector('.node[data-id="${A.id}"] .port.top')).opacity`);
+    await mouse('mouseMoved', 40, 780); await sleep(250);
+    assert.equal(await opacity(), '0', 'handles hidden when the pointer is far away');
+    await mouse('mouseMoved', ra.l - 18, ra.cy); await sleep(250);
+    assert.equal(await ev(`document.querySelector('.node[data-id="${A.id}"]').classList.contains('near')`), true, 'near class set');
+    assert.equal(await opacity(), '1', 'handles visible when the pointer is near');
+    assert.equal(await ev(`document.querySelectorAll('.node.near').length`), 1, 'only the nearby card shows handles');
+    await mouse('mouseMoved', 40, 780); await sleep(250);
+    assert.equal(await opacity(), '0', 'handles hide again when the pointer moves away');
+    console.log('ok handles appear only when the pointer is near a card');
+  }
+
   // 1. A bottom port -> C (drop just inside C's top edge): bottom -> top
   let p = await portPos(A.id, 'bottom'), r = await rect(C.id);
   await drag(p.x, p.y, r.cx, r.t + 8);
