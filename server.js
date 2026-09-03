@@ -28,7 +28,7 @@ const q = {
   deleteBoard: (id) => run('DELETE FROM boards WHERE id = $1', [id]),
   tasksOfBoard: (boardId) => all('SELECT * FROM tasks WHERE board_id = $1 ORDER BY id', [boardId]),
   depsOfBoard: (boardId) => all(
-    'SELECT from_id AS "from", to_id AS "to" FROM deps WHERE board_id = $1 ORDER BY from_id, to_id', [boardId]),
+    'SELECT from_id AS "from", to_id AS "to", from_side, to_side FROM deps WHERE board_id = $1 ORDER BY from_id, to_id', [boardId]),
   task: (id) => one('SELECT * FROM tasks WHERE id = $1', [id]),
   insertTask: async (boardId, title, notes, x, y) => (await one(
     'INSERT INTO tasks (board_id, title, notes, x, y) VALUES ($1, $2, $3, $4, $5) RETURNING id',
@@ -42,8 +42,13 @@ const q = {
   unfinishedBlockers: async (id) => (await one(`
     SELECT COUNT(*)::int AS n FROM deps d JOIN tasks t ON t.id = d.from_id
     WHERE d.to_id = $1 AND t.status <> 'done'`, [id])).n,
-  insertDep: (boardId, from, to) => run(
-    'INSERT INTO deps (board_id, from_id, to_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING', [boardId, from, to]),
+  insertDep: (boardId, from, to, fromSide = 'right', toSide = 'left') => run(
+    'INSERT INTO deps (board_id, from_id, to_id, from_side, to_side) VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING',
+    [boardId, from, to, fromSide, toSide]),
+  dep: (from, to) => one(
+    'SELECT from_id AS "from", to_id AS "to", from_side, to_side FROM deps WHERE from_id = $1 AND to_id = $2', [from, to]),
+  updateDepSides: (from, to, fromSide, toSide) => run(
+    'UPDATE deps SET from_side = $3, to_side = $4 WHERE from_id = $1 AND to_id = $2', [from, to, fromSide, toSide]),
   deleteDep: (from, to) => run('DELETE FROM deps WHERE from_id = $1 AND to_id = $2', [from, to]),
   depExists: async (from, to) => Boolean(await one('SELECT 1 FROM deps WHERE from_id = $1 AND to_id = $2', [from, to])),
 };
@@ -96,6 +101,13 @@ const notFound = (what) => { throw new HttpError(404, `${what} not found`); };
 
 const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
 const isId = (v) => Number.isInteger(v) && v > 0 && v <= MAX_ID;
+// Which edge of a card a link is attached to. Missing means "keep the default / current value".
+const SIDES = new Set(['left', 'right', 'top', 'bottom']);
+function cleanSide(v, fallback) {
+  if (v === undefined || v === null) return fallback;
+  if (typeof v !== 'string' || !SIDES.has(v)) bad('a side must be left, right, top or bottom');
+  return v;
+}
 const cleanTitle = (v) => {
   if (typeof v !== 'string') bad('title must be a string');
   const t = v.trim();
@@ -225,12 +237,22 @@ route('POST', '/api/boards/:id/deps', async ({ params, body }) => {
   const from = body.from, to = body.to;
   if (!isId(from) || !isId(to)) bad('from and to must be task ids');
   if (from === to) bad('a task cannot block itself');
+  const fromSide = cleanSide(body.from_side, 'right'), toSide = cleanSide(body.to_side, 'left');
   const [tf, tt] = await Promise.all([q.task(from), q.task(to)]);
   if (!tf || !tt || tf.board_id !== board.id || tt.board_id !== board.id) notFound('task');
-  if (await q.depExists(from, to)) return { from, to, existed: true };
+  const existing = await q.dep(from, to);
+  if (existing) return { ...existing, existed: true };
   if (await wouldCycle(board.id, from, to)) throw new HttpError(409, 'that link would create a cycle');
-  await q.insertDep(board.id, from, to);
-  return [201, { from, to }];
+  await q.insertDep(board.id, from, to, fromSide, toSide);
+  return [201, { from, to, from_side: fromSide, to_side: toSide }];
+});
+
+// Move an arrow to other sides of its cards (the link itself stays the same).
+route('PATCH', '/api/deps/:from/:to', async ({ params, body }) => {
+  const dep = (await q.dep(params.from, params.to)) || notFound('link');
+  const fromSide = cleanSide(body.from_side, dep.from_side), toSide = cleanSide(body.to_side, dep.to_side);
+  await q.updateDepSides(dep.from, dep.to, fromSide, toSide);
+  return { from: dep.from, to: dep.to, from_side: fromSide, to_side: toSide };
 });
 
 route('DELETE', '/api/deps/:from/:to', async ({ params }) => {

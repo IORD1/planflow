@@ -35,9 +35,15 @@ const SCHEMA = `
     board_id INTEGER NOT NULL REFERENCES boards(id) ON DELETE CASCADE,
     from_id  INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
     to_id    INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    -- which edge of each card the arrow is attached to
+    from_side TEXT NOT NULL DEFAULT 'right' CHECK (from_side IN ('left','right','top','bottom')),
+    to_side   TEXT NOT NULL DEFAULT 'left'  CHECK (to_side   IN ('left','right','top','bottom')),
     PRIMARY KEY (from_id, to_id),
     CHECK (from_id <> to_id)
   );
+  -- Databases created before the side columns existed (2026-09-03) get them added in place.
+  ALTER TABLE deps ADD COLUMN IF NOT EXISTS from_side TEXT NOT NULL DEFAULT 'right' CHECK (from_side IN ('left','right','top','bottom'));
+  ALTER TABLE deps ADD COLUMN IF NOT EXISTS to_side   TEXT NOT NULL DEFAULT 'left'  CHECK (to_side   IN ('left','right','top','bottom'));
   CREATE INDEX IF NOT EXISTS idx_tasks_board ON tasks(board_id);
   CREATE INDEX IF NOT EXISTS idx_deps_board  ON deps(board_id);
   CREATE INDEX IF NOT EXISTS idx_deps_to     ON deps(to_id);

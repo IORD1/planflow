@@ -119,13 +119,26 @@ main { flex: 1; display: flex; min-height: 0; }
 .node.drop-target { outline: 2px dashed var(--accent); outline-offset: 3px; }
 .node.drop-bad { outline: 2px dashed var(--red); outline-offset: 3px; }
 .port {
-  position: absolute; right: -10px; top: 50%; width: 18px; height: 18px; margin-top: -9px;
-  border-radius: 50%; background: var(--accent); border: 3px solid var(--bg); cursor: crosshair; z-index: 2;
-  opacity: 0.85;
+  position: absolute; width: 18px; height: 18px; border-radius: 50%; background: var(--accent);
+  border: 3px solid var(--bg); cursor: crosshair; z-index: 2; opacity: 0.85;
 }
-.port::before { content: ""; position: absolute; inset: -12px; }
+.port.right  { right: -10px; top: 50%; margin-top: -9px; }
+.port.left   { left: -10px; top: 50%; margin-top: -9px; }
+.port.top    { top: -10px; left: 50%; margin-left: -9px; }
+.port.bottom { bottom: -10px; left: 50%; margin-left: -9px; }
+.port.left, .port.top, .port.bottom { opacity: 0.35; }         /* quieter until the card is hovered or selected */
+.node:hover .port, .node.selected .port, .node.dragging .port, .node.drop-target .port { opacity: 1; }
+.port::before { content: ""; position: absolute; inset: -12px; }   /* bigger invisible hit area */
+/* the three extra handles reach less far into the card so grabbing a card by its title still moves it */
+.port.left::before   { inset: -10px -2px -10px -10px; }
+.port.top::before    { inset: -10px -10px -2px -10px; }
+.port.bottom::before { inset: -2px -10px -10px -10px; }
 .port:hover { opacity: 1; transform: scale(1.15); }
+.port.hot { opacity: 1; transform: scale(1.35); box-shadow: 0 0 0 4px var(--accent-dim); }  /* side the dragged link will attach to */
 .node.done .port { background: var(--green); }
+.sides { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.side-pick { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+.side-pick select { width: 100%; padding: 6px 8px; background: var(--bg-2); border: 1px solid var(--border); border-radius: 6px; }
 
 #edgeUnlink {
   position: absolute; transform: translate(-50%, -50%); z-index: 30;

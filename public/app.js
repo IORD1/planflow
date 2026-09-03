@@ -9,7 +9,7 @@
 
   const state = {
     boards: [], boardId: null, board: null,
-    tasks: new Map(), deps: [],           // deps: [{from, to}]  "from must be done before to"
+    tasks: new Map(), deps: [],           // deps: [{from, to, from_side, to_side}]  "from must be done before to"
     selected: null,                       // {type:'task', id} | {type:'edge', from, to}
     view: { x: 40, y: 40, s: 1 },
   };
@@ -139,7 +139,7 @@
       h('button', { class: 'check', 'aria-label': 'Toggle done' }, '✓'),
       h('div', { class: 'title' }),
       h('div', { class: 'meta' }, h('span', { class: 'badge' })),
-      h('div', { class: 'port', title: 'Drag onto another task: that task will wait for this one' }));
+      ...SIDES.map((s) => h('div', { class: 'port ' + s, 'data-side': s, title: 'Drag onto another task: that task will wait for this one' })));
     updateNode(el, t);
     return el;
   }
@@ -169,13 +169,31 @@
   }
 
   // ---------------------------------------------------------------- edges
-  function anchors(id) {
-    const el = nodeEls.get(id), t = state.tasks.get(id);
-    return { out: { x: t.x + el.offsetWidth, y: t.y + el.offsetHeight / 2 }, in: { x: t.x, y: t.y + el.offsetHeight / 2 } };
+  // A link leaves its source card and enters its target card through one of four sides.
+  // Old links (and "Add next step") use the defaults: out of the right side, into the left.
+  const SIDES = ['right', 'left', 'top', 'bottom'];
+  const DIR = { right: { x: 1, y: 0 }, left: { x: -1, y: 0 }, top: { x: 0, y: -1 }, bottom: { x: 0, y: 1 } };
+  // Point on the given side of a card, plus the outward direction there.
+  function anchor(id, side) {
+    const el = nodeEls.get(id), t = state.tasks.get(id), w = el.offsetWidth, hh = el.offsetHeight;
+    const dir = DIR[side] || DIR.right;
+    const p = side === 'left' ? { x: t.x, y: t.y + hh / 2 } : side === 'top' ? { x: t.x + w / 2, y: t.y }
+      : side === 'bottom' ? { x: t.x + w / 2, y: t.y + hh } : { x: t.x + w, y: t.y + hh / 2 };
+    return { ...p, dir };
   }
+  // Which side of card `id` is closest to world point p: a dropped link attaches there.
+  function nearestSide(id, p) {
+    const el = nodeEls.get(id), t = state.tasks.get(id);
+    const dist = { left: Math.abs(p.x - t.x), right: Math.abs(p.x - (t.x + el.offsetWidth)),
+      top: Math.abs(p.y - t.y), bottom: Math.abs(p.y - (t.y + el.offsetHeight)) };
+    return SIDES.reduce((best, s) => (dist[s] < dist[best] ? s : best), 'right');
+  }
+  // Control points: each end leaves its card straight out of its side, then bends toward the other end.
   function bezier(a, b) {
-    const dx = Math.max(40, Math.abs(b.x - a.x) * 0.5);
-    return { p1: { x: a.x + dx, y: a.y }, p2: { x: b.x - dx, y: b.y } };
+    const da = a.dir || DIR.right, db = b.dir || DIR.left;
+    const reach = (dir) => Math.max(40, (dir.x ? Math.abs(b.x - a.x) : Math.abs(b.y - a.y)) * 0.5);
+    const ka = reach(da), kb = reach(db);
+    return { p1: { x: a.x + da.x * ka, y: a.y + da.y * ka }, p2: { x: b.x + db.x * kb, y: b.y + db.y * kb } };
   }
   function pathD(a, b) { const { p1, p2 } = bezier(a, b); return `M ${a.x} ${a.y} C ${p1.x} ${p1.y}, ${p2.x} ${p2.y}, ${b.x} ${b.y}`; }
   const EDGE_PAD = 10;   // how close a link may come to a card it is not attached to
@@ -186,8 +204,10 @@
   }
   // Path for a link. If the plain curve would run under another card, detour above or
   // below it so the link stays visible (e.g. a link that skips a column after Arrange).
-  function edgePath(fromId, toId) {
-    const a = anchors(fromId).out, b = anchors(toId).in;
+  function edgePath(d) {
+    const fromId = d.from, toId = d.to, fs = d.from_side || 'right', ts = d.to_side || 'left';
+    const a = anchor(fromId, fs), b = anchor(toId, ts);
+    if (fs !== 'right' || ts !== 'left') return pathD(a, b);  // only the usual right→left links get detours
     if (b.x - a.x < 60) return pathD(a, b);                 // backwards or very short: plain curve
     const { p1, p2 } = bezier(a, b);
     const hits = [];
@@ -221,7 +241,7 @@
       if (!nodeEls.has(d.from) || !nodeEls.has(d.to)) continue;
       const sel = isSel('edge', d);
       const kind = sel ? 'selected' : state.tasks.get(d.from).status === 'done' ? 'satisfied' : 'pending';
-      const dAttr = edgePath(d.from, d.to);
+      const dAttr = edgePath(d);
       const p = svgEl('path', { d: dAttr, class: `edge ${kind}`, 'marker-end': `url(#arrow-${kind})` });
       edgeLayer.append(p, svgEl('path', { d: dAttr, class: 'edge-hit', 'data-from': d.from, 'data-to': d.to }));
       if (sel) {
@@ -230,7 +250,10 @@
       }
     }
     if (gesture && gesture.type === 'link' && gesture.cur && nodeEls.has(gesture.from)) {
-      edgeLayer.append(svgEl('path', { d: pathD(anchors(gesture.from).out, gesture.cur), class: 'edge temp', 'marker-end': 'url(#arrow-temp)' }));
+      const a = anchor(gesture.from, gesture.fromSide);
+      const b = gesture.target && nodeEls.has(gesture.target) ? anchor(gesture.target, gesture.targetSide)   // snap to the drop side
+        : { ...gesture.cur, dir: { x: -a.dir.x, y: -a.dir.y } };
+      edgeLayer.append(svgEl('path', { d: pathD(a, b), class: 'edge temp', 'marker-end': 'url(#arrow-temp)' }));
     }
   }
 
@@ -291,6 +314,22 @@
           dependents.length ? h('ul', {}, dependents.map((d) => taskRow(d, unlinkBtn(t.id, d.id)))) : h('div', { class: 'empty' }, 'Nothing depends on this yet. Drag its ● handle onto a task to link.')),
         h('div', { class: 'muted small' }, `Created ${fmtDate(t.created_at)}` + (t.done_at ? ` · Done ${fmtDate(t.done_at)}` : '')));
       if (opts.focusTitle) { titleInput.focus(); titleInput.select(); }
+      return;
+    }
+    const d = sel && sel.type === 'edge' ? state.deps.find((x) => x.from === sel.from && x.to === sel.to) : null;
+    const a = d && state.tasks.get(d.from), b = d && state.tasks.get(d.to);
+    if (d && a && b) {
+      const pick = (key, label) => h('label', { class: 'side-pick' }, h('span', {}, label),
+        h('select', { onchange: (e) => setDepSides(d, { [key]: e.target.value }) },
+          ...SIDES.map((s) => h('option', { value: s, selected: (d[key] || (key === 'from_side' ? 'right' : 'left')) === s }, s))));
+      setPanel(
+        h('div', { class: 'panel-head' }, h('span', { class: 'badge' }, 'Link'), h('span', { class: 'spacer' }), closeBtn),
+        h('section', {}, h('h4', {}, 'Must finish first'), h('ul', {}, taskRow(a))),
+        h('section', {}, h('h4', {}, 'Then this can start'), h('ul', {}, taskRow(b))),
+        h('section', {}, h('h4', {}, 'Arrow sides'),
+          h('div', { class: 'sides' }, pick('from_side', 'Leaves the first card from its'), pick('to_side', 'Enters the second card at its'))),
+        h('div', { class: 'row' }, h('button', { class: 'danger', onclick: () => deleteDep(d.from, d.to) }, 'Unlink')),
+        h('div', { class: 'muted small' }, 'Drag a ● handle on any side of a card onto another card to make a new link; it attaches to the side you drop nearest to.'));
       return;
     }
     const tasks = [...state.tasks.values()];
@@ -370,10 +409,18 @@
     if (state.deps.some((d) => d.from === from && d.to === to)) { toast('Already linked.'); return; }
     if (reaches(to, from)) { toast("Can't link: that would make a loop."); return; }
     try {
-      await api('POST', `/api/boards/${state.boardId}/deps`, { from, to });
-      state.deps.push({ from, to });
+      const fromSide = opts.fromSide || 'right', toSide = opts.toSide || 'left';
+      const r = await api('POST', `/api/boards/${state.boardId}/deps`, { from, to, from_side: fromSide, to_side: toSide });
+      state.deps.push({ from, to, from_side: (r && r.from_side) || fromSide, to_side: (r && r.to_side) || toSide });
       refreshNodes();
       if (!opts.quiet) toast(`"${titleOf(to)}" now waits for "${titleOf(from)}"`);
+    } catch (e) { toast(e.message); }
+  }
+  async function setDepSides(d, patch) {
+    try {
+      const r = await api('PATCH', `/api/deps/${d.from}/${d.to}`, patch);
+      d.from_side = r.from_side; d.to_side = r.to_side;
+      renderEdges();
     } catch (e) { toast(e.message); }
   }
   async function deleteDep(from, to) {
@@ -451,9 +498,11 @@
   }
 
   // ---------------------------------------------------------------- pointer gestures
-  function setDropTarget(el, ok) {
+  function setDropTarget(el, ok, side) {
     for (const n of nodesLayer.querySelectorAll('.drop-target, .drop-bad')) n.classList.remove('drop-target', 'drop-bad');
+    for (const p of nodesLayer.querySelectorAll('.port.hot')) p.classList.remove('hot');
     if (el) el.classList.add(ok ? 'drop-target' : 'drop-bad');
+    if (el && ok && side) { const p = el.querySelector('.port.' + side); if (p) p.classList.add('hot'); }
   }
   function nodeAtPoint(cx, cy) {
     const el = document.elementFromPoint(cx, cy);
@@ -489,7 +538,8 @@
       gesture = { ...base, type: 'pan', ox: state.view.x, oy: state.view.y, middle: true };
       viewport.classList.add('panning');
     } else if (nodeEl && e.target.closest('.port')) {
-      gesture = { ...base, type: 'link', from: +nodeEl.dataset.id, cur: null };
+      gesture = { ...base, type: 'link', from: +nodeEl.dataset.id, fromSide: e.target.closest('.port').dataset.side || 'right',
+        cur: null, target: null, targetSide: null };
     } else if (nodeEl) {
       const t = state.tasks.get(+nodeEl.dataset.id);
       gesture = { ...base, type: 'node', id: t.id, ox: t.x, oy: t.y };
@@ -530,11 +580,13 @@
       }
       case 'link': {
         gesture.cur = clientToWorld(e.clientX, e.clientY);
-        renderEdges();
         const target = nodeAtPoint(e.clientX, e.clientY);
         const tid = target ? +target.dataset.id : null;
-        setDropTarget(target && tid !== gesture.from ? target : null,
-          !!target && !reaches(tid, gesture.from) && !state.deps.some((d) => d.from === gesture.from && d.to === tid));
+        const ok = !!target && tid !== gesture.from && !reaches(tid, gesture.from) && !state.deps.some((d) => d.from === gesture.from && d.to === tid);
+        gesture.target = ok ? tid : null;
+        gesture.targetSide = ok ? nearestSide(tid, gesture.cur) : null;
+        renderEdges();
+        setDropTarget(target && tid !== gesture.from ? target : null, ok, gesture.targetSide);
         break;
       }
     }
@@ -558,7 +610,10 @@
         setDropTarget(null);
         const target = e.type === 'pointercancel' ? null : nodeAtPoint(e.clientX, e.clientY);
         renderEdges();
-        if (target) addDep(g.from, +target.dataset.id);
+        if (target) {
+          const tid = +target.dataset.id;
+          addDep(g.from, tid, { fromSide: g.fromSide, toSide: nearestSide(tid, clientToWorld(e.clientX, e.clientY)) });
+        }
         else if (g.moved) toast('Drop onto a task to link it.');
         else select({ type: 'task', id: g.from });
         break;

@@ -33,20 +33,25 @@ Rules that follow from this:
 | Add a task | `+ Task` button, press `N`, double-click or **middle-click** empty canvas, or right-click it and choose `Add task here` |
 | Rename it, add notes | click the task, edit in the side panel. Saves as you type |
 | Move a task | drag it anywhere |
-| Make B wait for A | drag A's blue **●** handle (right edge) and drop it on B |
+| Make B wait for A | drag one of A's blue **●** handles (there is one on each side of the box) and drop it on B. The arrow attaches to whichever side of B you drop nearest to |
+| Move an arrow to another side | click the link, then pick the sides in the side panel (`Leaves the first card from its…` / `Enters the second card at its…`) |
 | Remove a link | click the link line, then press `Unlink` (or `Delete`), or right-click it and choose `Unlink` |
 | Finish a task | click the circle on the box, `Mark done` in the panel, or right-click the box |
 | Reopen a task | click the green circle again, or `Reopen` in the panel |
 | Delete a task | right-click it and choose `Delete task`, or select it and press `Delete`, or use the panel button |
 | Add the next step | right-click a task and choose `Add next step`. A new task appears to its right, already linked |
-| Tidy the layout | `Arrange` or `A`. Columns by dependency depth; links that skip a column get their own lane |
+| Tidy the layout | `Arrange` or `A`. Columns by dependency depth; links that skip a column get their own lane. Arrows keep the sides you chose |
 | See everything | `Fit` or `F` |
 | Zoom | scroll wheel, or pinch on a phone |
 | Pan | drag empty canvas, or drag with the middle button |
 | Deselect | click empty canvas or press `Esc` |
 
 While you drag a link, the box under your finger gets a blue dashed outline when the
-drop is allowed and a red one when it would make a loop or already exists.
+drop is allowed and a red one when it would make a loop or already exists. The handle
+on the side the arrow will attach to grows and glows, and the arrow already snaps to it,
+so you see the result before letting go. Arrows can leave and enter on any of the four
+sides, which makes it easy to draw a setup diagram: for example two app boxes side by
+side, each with an arrow going down into the same database box.
 
 ### Right-click menu
 
@@ -129,11 +134,14 @@ Vanilla JavaScript, one file, no build step. The important pieces:
   the task's blockers. `reaches(a, b)` walks the links for the cycle check.
 - **The canvas** is a `#viewport` div with a `#world` div inside it. Panning and zooming
   just set a CSS `transform: translate(...) scale(...)` on `#world`. Boxes are plain
-  `div.node` elements positioned with `left`/`top`. Links are SVG paths (cubic
-  béziers from the right edge of one box to the left edge of the other) in an SVG that
-  sits under the boxes. A second, invisible, wide path per link is the click target.
+  `div.node` elements positioned with `left`/`top`. Links are SVG paths (cubic béziers)
+  in an SVG that sits under the boxes. Each link remembers which side of each box it is
+  attached to (`from_side`, `to_side`; the default is right → left), and the curve leaves
+  each side straight out before bending toward the other end, so an arrow into the top
+  of a box arrives pointing down. A second, invisible, wide path per link is the click
+  target.
 - **Gestures** all go through pointer events on `#viewport`, so mouse and touch behave
-  the same. A pointer-down decides what it is: on a **●** handle it starts a link drag;
+  the same. A pointer-down decides what it is: on a **●** handle it starts a link drag from that side (on release, the side of the target box nearest the pointer becomes the entry side);
   on a box it starts a move; on a link line it selects it; on empty canvas it pans.
   A pointer that moves less than 4 px counts as a click (select or deselect). The middle
   button starts a pan too, and if it never moves the release adds a task under the
@@ -153,14 +161,16 @@ Vanilla JavaScript, one file, no build step. The important pieces:
   it would pass under any card it is not attached to (with a 10 px margin). If so, the
   link is redrawn as a detour that goes over or under the offending cards, whichever is
   closer. This keeps links visible in hand-made layouts too, for example when you drag a
-  card onto a straight link.
+  card onto a straight link. Detours only apply to the usual right → left links; arrows
+  attached to other sides are drawn as plain curves.
 - **Refresh**: when the tab becomes visible again the board is reloaded from the server,
   so changes made from your phone show up on the laptop when you come back to it.
 
 ### API summary
 
 All requests and responses are JSON. In every link, `from` is the task that must
-finish first and `to` is the one that waits.
+finish first and `to` is the one that waits. `from_side` and `to_side` (`left`, `right`,
+`top` or `bottom`) say where the arrow is attached; they default to `right` and `left`.
 
 ```
 GET    /api/boards                     boards with total/done counts
@@ -170,9 +180,10 @@ DELETE /api/boards/:id
 GET    /api/boards/:id                 {board, tasks, deps}
 POST   /api/boards/:id/tasks           {title, notes?, x?, y?}
 POST   /api/boards/:id/positions       {positions: [{id, x, y}]}
-POST   /api/boards/:id/deps            {from, to}
+POST   /api/boards/:id/deps            {from, to, from_side?, to_side?}
 PATCH  /api/tasks/:id                  {title?, notes?, status?, x?, y?, force?}
 DELETE /api/tasks/:id
+PATCH  /api/deps/:from/:to             {from_side?, to_side?}
 DELETE /api/deps/:from/:to
 GET    /api/health
 ```

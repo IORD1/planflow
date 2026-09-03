@@ -16,7 +16,7 @@ Project layout:
 ```
 server.js            HTTP server, API, queries and seed
 db.js                Postgres connection pool, schema (CREATE TABLE IF NOT EXISTS), helpers
-scripts/             one-off tools (migrate-sqlite.js imported the old SQLite file)
+scripts/             api-test.mjs + ui-test.mjs (run against a local server), migrate-sqlite.js (one-off import)
 public/index.html    page skeleton, top bar, SVG arrow markers
 public/app.js        all frontend logic
 public/style.css     all styling (colour tokens at the top in :root)
@@ -83,6 +83,19 @@ curl -s $B/api/health
 curl -s $B/api/boards
 curl -s -X POST $B/api/boards/1/tasks -H 'Content-Type: application/json' -d '{"title":"Try it","x":100,"y":100}'
 ```
+
+There are two proper test scripts in `scripts/`. Both create a board, exercise it, and
+delete it again, so run them **only against a local server on a throwaway database**
+(see "Running it locally" below), never against the live app:
+
+```sh
+PLANFLOW_URL=http://localhost:8093 node scripts/api-test.mjs   # link endpoints, sides, cycles
+PLANFLOW_URL=http://localhost:8093 node scripts/ui-test.mjs    # drives headless Chrome through the real UI
+```
+
+`ui-test.mjs` needs Google Chrome at `/usr/bin/google-chrome` (or set `CHROME=`). It drags
+links between cards with synthetic mouse events, checks what the server stored and what
+the SVG drew, and leaves a screenshot `sides.png` in `$SCRATCH` (default: the temp dir).
 
 ## Deploying to thundertrident
 
