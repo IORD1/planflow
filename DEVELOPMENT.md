@@ -136,9 +136,15 @@ That is the whole deploy. What happens on the server:
 1. A systemd timer (`autodeploy.timer`) runs `/usr/local/bin/autodeploy` every 10 minutes.
 2. The script reads `/etc/autodeploy.conf`, one app per line. For each, it runs
    `git fetch` in that directory using a read-only deploy key.
-3. If `origin/main` has moved, it does `git reset --hard origin/main` and
+3. If `origin/main` moved since that directory was last deployed, it does
+   `git reset --hard origin/main` and, when files under that directory changed,
    `docker compose up -d --build --remove-orphans`, then prunes old images.
 4. Nothing happens when there is no new commit, so the timer is cheap.
+
+The last deployed commit is remembered per directory in `~/.local/state/autodeploy/`
+on the server. That is what lets several stacks share one repo (the IORD1/homelab repo
+holds `postgres`, `redis`, `sure` and `securo`): a push touching only one folder deploys
+only that folder. A directory with no stamp yet is deployed once regardless.
 
 The server checkout is `~/planflow` on thundertrident, a normal git clone whose remote
 uses the SSH alias `github.com-planflow` (see `~/.ssh/config` there). The `.env` file
@@ -157,7 +163,8 @@ ssh iord@thundertrident 'systemctl list-timers autodeploy.timer'       # next ch
 curl http://thundertrident:8090/api/health                             # {"ok":true}
 ```
 
-A failed build logs `DEPLOY FAILED`; the previous container keeps running in that case.
+A failed build logs `DEPLOY FAILED`; the previous container keeps running in that case,
+and the deploy is retried on every run (every 10 minutes) until it succeeds.
 Fix the problem, push again, and the next tick retries. The interval lives in
 `deploy/autodeploy.timer` (`OnUnitActiveSec`); after changing it, reinstall the file to
 `/etc/systemd/system/` and run `sudo systemctl daemon-reload`.

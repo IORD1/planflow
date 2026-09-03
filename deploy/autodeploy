@@ -1,14 +1,20 @@
 #!/usr/bin/env bash
 # autodeploy: for each app listed in the config, fetch its git remote and, if the
 # remote branch moved, reset to it and rebuild the Docker Compose project.
+# Several stacks may share one repo (~/homelab/postgres, ~/homelab/sure, ...), so the
+# last deployed commit is remembered per directory under $STATE, and compose only runs
+# when files under that directory changed since then. A directory with no stamp yet is
+# always deployed once. A failed deploy is retried on every run until it succeeds.
 # Runs from a systemd timer every 10 minutes. Logs go to the journal:
 #   journalctl -u autodeploy -n 50
 set -uo pipefail
 CONF="${AUTODEPLOY_CONF:-/etc/autodeploy.conf}"
+STATE="${AUTODEPLOY_STATE:-$HOME/.local/state/autodeploy}"
 exec 9>/tmp/autodeploy.lock
 flock -n 9 || { echo "another run is still in progress, skipping"; exit 0; }
 log() { printf '%s %s\n' "$(date '+%F %T')" "$*"; }
 [ -r "$CONF" ] || { log "no config at $CONF"; exit 1; }
+mkdir -p "$STATE"
 
 status=0
 mapfile -t lines < "$CONF"
@@ -20,15 +26,27 @@ for line in "${lines[@]}"; do
   if ! git -C "$dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then log "$dir: not inside a git repo, skipping"; status=1; continue; fi
   cd "$dir" || { status=1; continue; }
   if ! out=$(git fetch -q origin "$branch" 2>&1 </dev/null); then log "$dir: fetch failed: $out"; status=1; continue; fi
-  local_rev=$(git rev-parse HEAD)
   remote_rev=$(git rev-parse "origin/$branch")
-  [ "$local_rev" = "$remote_rev" ] && continue
-  log "$dir: ${local_rev:0:7} -> ${remote_rev:0:7}, deploying"
-  if git reset -q --hard "origin/$branch" </dev/null && docker compose up -d --build --remove-orphans </dev/null 2>&1 | tail -n 3; then
+  stamp="$STATE/${dir//\//_}.rev"        # /home/iord/homelab/sure -> _home_iord_homelab_sure.rev
+  deployed_rev=$(cat "$stamp" 2>/dev/null || true)
+  [ "$deployed_rev" = "$remote_rev" ] && continue
+  # Bring the checkout up to date (already done if a sibling stack in the same repo ran first).
+  if [ "$(git rev-parse HEAD)" != "$remote_rev" ] && ! git reset -q --hard "origin/$branch" </dev/null; then
+    log "$dir: reset to origin/$branch failed"; status=1; continue
+  fi
+  # Nothing under this directory changed since its last deploy (docs-only commit, or a
+  # commit for a sibling stack): just move the stamp.
+  if [ -n "$deployed_rev" ] && git diff --quiet "$deployed_rev" "$remote_rev" -- . 2>/dev/null; then
+    echo "$remote_rev" > "$stamp"; continue
+  fi
+  from="${deployed_rev:0:7}"
+  log "$dir: ${from:-first deploy} -> ${remote_rev:0:7}, deploying"
+  if docker compose up -d --build --remove-orphans </dev/null 2>&1 | tail -n 3; then
+    echo "$remote_rev" > "$stamp"
     docker image prune -f >/dev/null 2>&1 </dev/null
     log "$dir: deployed $(git log -1 --format='%h %s')"
   else
-    log "$dir: DEPLOY FAILED (still on ${local_rev:0:7}? check: docker compose logs)"
+    log "$dir: DEPLOY FAILED, will retry next run (check: cd $dir && docker compose logs)"
     status=1
   fi
 done
