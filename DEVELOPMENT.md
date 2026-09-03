@@ -86,7 +86,7 @@ curl -s -X POST $B/api/boards/1/tasks -H 'Content-Type: application/json' -d '{"
 
 There are two proper test scripts in `scripts/`. Both create a board, exercise it, and
 delete it again, so run them **only against a local server on a throwaway database**
-(see "Running it locally" below), never against the live app:
+(see "Running locally" above), never against the live app:
 
 ```sh
 PLANFLOW_URL=http://localhost:8093 node scripts/api-test.mjs   # link endpoints, sides, cycles
