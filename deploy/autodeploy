@@ -1,20 +1,77 @@
 #!/usr/bin/env bash
-# autodeploy: for each app listed in the config, fetch its git remote and, if the
+# autodeploy: for each checkout listed in the config, fetch its git remote and, if the
 # remote branch moved, reset to it and rebuild the Docker Compose project.
-# Several stacks may share one repo (~/homelab/postgres, ~/homelab/sure, ...), so the
-# last deployed commit is remembered per directory under $STATE, and compose only runs
-# when files under that directory changed since then. A directory with no stamp yet is
-# always deployed once. A failed deploy is retried on every run until it succeeds.
-# Runs from a systemd timer every 10 minutes. Logs go to the journal:
-#   journalctl -u autodeploy -n 50
+#
+# Everything it knows lives in one directory, $STATE (~/.local/state/autodeploy), which
+# Hermes mounts at /autodeploy so its Deploys page can drive it:
+#   autodeploy.conf   the list, one "<absolute dir> [branch]" per line. Hermes edits it.
+#   <dir>.rev         last deployed commit per directory (dir with / replaced by _).
+#                     Several stacks may share one repo (~/homelab/postgres, ~/homelab/sure
+#                     ...), so compose only runs when files under that directory changed
+#                     since its stamp. A directory with no stamp yet is deployed once.
+#                     A failed deploy is retried on every run until it succeeds.
+#   trigger           create it to ask for a run now. Hermes writes "hermes <time>",
+#                     `touch` works too. autodeploy.path starts the service when it
+#                     appears and this script deletes it.
+#   last-run          what the latest run did, tab-separated (see write_last_run).
+#   events.log        one line per deploy or failure, tab-separated, appended.
+# Who runs it: Hermes' `deploy` job every 10 minutes and on "Deploy now", through the
+# trigger file. autodeploy.timer fires at :05, :15, ... as the fallback and only acts
+# when no run finished within AUTODEPLOY_FALLBACK_AFTER seconds (set in the service
+# file; unset = always run, as when started by hand). Logs: journalctl -u autodeploy -n 50
 set -uo pipefail
-CONF="${AUTODEPLOY_CONF:-/etc/autodeploy.conf}"
 STATE="${AUTODEPLOY_STATE:-$HOME/.local/state/autodeploy}"
-exec 9>/tmp/autodeploy.lock
-flock -n 9 || { echo "another run is still in progress, skipping"; exit 0; }
-log() { printf '%s %s\n' "$(date '+%F %T')" "$*"; }
-[ -r "$CONF" ] || { log "no config at $CONF"; exit 1; }
+CONF="${AUTODEPLOY_CONF:-$STATE/autodeploy.conf}"
 mkdir -p "$STATE"
+log() { printf '%s %s\n' "$(date '+%F %T')" "$*"; }
+now() { date -Is; }
+oneline() { printf '%s' "$*" | tr '\t\n' '  '; }   # tabs and newlines are the separators in the state files
+
+# Who asked for this run: the trigger file (Hermes or a human), the timer, or a hand start.
+trigger=manual
+if [ -e "$STATE/trigger" ]; then
+  trigger=$(head -c 64 "$STATE/trigger" 2>/dev/null | awk 'NR == 1 { print $1 }')
+  [[ "$trigger" =~ ^[a-z][a-z0-9-]*$ ]] || trigger=manual
+  rm -f "$STATE/trigger"
+elif [[ "${TRIGGER_UNIT:-}" == *.timer ]]; then
+  trigger=timer
+  if [ -n "${AUTODEPLOY_FALLBACK_AFTER:-}" ]; then
+    last=$(awk -F '\t' '$1 == "finished" { print $2 }' "$STATE/last-run" 2>/dev/null)
+    if [ -n "$last" ]; then
+      age=$(( $(date +%s) - $(date -d "$last" +%s 2>/dev/null || echo 0) ))
+      if [ "$age" -lt "$AUTODEPLOY_FALLBACK_AFTER" ]; then
+        log "timer: a run finished ${age}s ago (Hermes is doing the checks), skipping"
+        exit 0
+      fi
+    fi
+  fi
+fi
+
+# One run at a time. A hand-started run may be in progress; wait for it rather than drop
+# the request (systemd never starts the service twice, so this only matters for shells).
+exec 9>/tmp/autodeploy.lock
+flock -w 900 9 || { log "could not get the lock in 15 minutes, giving up"; exit 1; }
+
+started=$(now)
+apps=()
+# last-run: "started\t<time>", "trigger\t<who>", then once done "finished\t<time>",
+# "result\tok|failed" and one "app\t<dir>\t<branch>\t<rev>\t<status>\t<message>" per
+# entry (status: up-to-date, deployed, failed, error). Written whole, then renamed, so a
+# reader never sees a half-written file.
+write_last_run() {
+  {
+    printf 'started\t%s\ntrigger\t%s\n' "$started" "$trigger"
+    [ -n "$1" ] && printf 'finished\t%s\nresult\t%s\n' "$1" "$2"
+    [ "${#apps[@]}" -gt 0 ] && printf '%s\n' "${apps[@]}"
+  } > "$STATE/last-run.tmp" && mv -f "$STATE/last-run.tmp" "$STATE/last-run"
+}
+app_line() { apps+=("$(printf 'app\t%s\t%s\t%s\t%s\t%s' "$dir" "$branch" "$1" "$2" "$(oneline "$3")")"); }
+# events.log: "<time>\t<trigger>\t<dir>\t<deployed|failed>\t<from>\t<to>\t<message>"
+event() { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(now)" "$trigger" "$dir" "$1" "$2" "$3" "$(oneline "$4")" >> "$STATE/events.log"; }
+
+write_last_run "" ""
+[ -r "$CONF" ] || { log "no config at $CONF"; write_last_run "$(now)" failed; exit 1; }
+log "run requested by $trigger"
 
 status=0
 mapfile -t lines < "$CONF"
@@ -23,31 +80,42 @@ for line in "${lines[@]}"; do
   [[ -z "${dir:-}" || "$dir" == \#* ]] && continue
   branch="${branch:-main}"
   # The dir may be a subfolder of a repo (one repo, several compose stacks), so ask git.
-  if ! git -C "$dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then log "$dir: not inside a git repo, skipping"; status=1; continue; fi
-  cd "$dir" || { status=1; continue; }
-  if ! out=$(git fetch -q origin "$branch" 2>&1 </dev/null); then log "$dir: fetch failed: $out"; status=1; continue; fi
+  if ! git -C "$dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    log "$dir: not inside a git repo, skipping"; app_line "" error "not a git checkout (is the path right?)"; status=1; continue
+  fi
+  cd "$dir" || { app_line "" error "cannot enter the directory"; status=1; continue; }
+  if ! out=$(git fetch -q origin "$branch" 2>&1 </dev/null); then
+    log "$dir: fetch failed: $out"; app_line "" error "fetch failed: $out"; status=1; continue
+  fi
   remote_rev=$(git rev-parse "origin/$branch")
   stamp="$STATE/${dir//\//_}.rev"        # /home/iord/homelab/sure -> _home_iord_homelab_sure.rev
   deployed_rev=$(cat "$stamp" 2>/dev/null || true)
-  [ "$deployed_rev" = "$remote_rev" ] && continue
+  if [ "$deployed_rev" = "$remote_rev" ]; then app_line "${remote_rev:0:7}" up-to-date ""; continue; fi
   # Bring the checkout up to date (already done if a sibling stack in the same repo ran first).
   if [ "$(git rev-parse HEAD)" != "$remote_rev" ] && ! git reset -q --hard "origin/$branch" </dev/null; then
-    log "$dir: reset to origin/$branch failed"; status=1; continue
+    log "$dir: reset to origin/$branch failed"; app_line "${deployed_rev:0:7}" error "git reset to origin/$branch failed"; status=1; continue
   fi
   # Nothing under this directory changed since its last deploy (docs-only commit, or a
   # commit for a sibling stack): just move the stamp.
   if [ -n "$deployed_rev" ] && git diff --quiet "$deployed_rev" "$remote_rev" -- . 2>/dev/null; then
-    echo "$remote_rev" > "$stamp"; continue
+    echo "$remote_rev" > "$stamp"; app_line "${remote_rev:0:7}" up-to-date "new commit did not touch this directory"; continue
   fi
   from="${deployed_rev:0:7}"
   log "$dir: ${from:-first deploy} -> ${remote_rev:0:7}, deploying"
-  if docker compose up -d --build --remove-orphans </dev/null 2>&1 | tail -n 3; then
+  out=$(docker compose up -d --build --remove-orphans </dev/null 2>&1); rc=$?
+  printf '%s\n' "$out" | tail -n 3
+  if [ "$rc" -eq 0 ]; then
     echo "$remote_rev" > "$stamp"
     docker image prune -f >/dev/null 2>&1 </dev/null
-    log "$dir: deployed $(git log -1 --format='%h %s')"
+    subject=$(git log -1 --format='%s')
+    log "$dir: deployed ${remote_rev:0:7} $subject"
+    app_line "${remote_rev:0:7}" deployed "$subject"; event deployed "$from" "${remote_rev:0:7}" "$subject"
   else
+    reason=$(printf '%s\n' "$out" | grep -v '^[[:space:]]*$' | tail -n 1)
     log "$dir: DEPLOY FAILED, will retry next run (check: cd $dir && docker compose logs)"
+    app_line "$from" failed "$reason"; event failed "$from" "${remote_rev:0:7}" "$reason"
     status=1
   fi
 done
+write_last_run "$(now)" "$([ "$status" -eq 0 ] && echo ok || echo failed)"
 exit $status

@@ -1,0 +1,9 @@
+[Unit]
+Description=Deploy now when the trigger file appears (Hermes "Deploy now" and its deploy job)
+
+[Path]
+PathExists=/home/iord/.local/state/autodeploy/trigger
+Unit=autodeploy.service
+
+[Install]
+WantedBy=multi-user.target

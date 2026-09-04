@@ -1,9 +1,9 @@
 [Unit]
-Description=Check for new commits every 10 minutes
+Description=Fallback deploy check at :05, :15, ... (Hermes drives the regular ones)
 
 [Timer]
 OnBootSec=90s
-OnUnitActiveSec=10min
+OnCalendar=*:05/10
 AccuracySec=30s
 
 [Install]

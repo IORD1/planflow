@@ -8,4 +8,7 @@ Type=oneshot
 User=iord
 Environment=HOME=/home/iord
 Environment=PATH=/snap/bin:/usr/local/bin:/usr/bin:/bin
+# Hermes' deploy job runs the checks every 10 minutes; a run started by autodeploy.timer
+# is the fallback and skips itself when a run finished less than this many seconds ago.
+Environment=AUTODEPLOY_FALLBACK_AFTER=480
 ExecStart=/usr/local/bin/autodeploy

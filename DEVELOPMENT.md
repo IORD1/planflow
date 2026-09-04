@@ -103,15 +103,16 @@ the SVG drew, and leaves a screenshot `sides.png` in `$SCRATCH` (default: the te
 
 Nothing runs on the laptop. The laptop only pushes commits to GitHub.
 
-The checking job lives **on the server** (thundertrident). It is a systemd *timer*,
-which is the modern Ubuntu equivalent of a cron job. Every 10 minutes it wakes up, and for
-every app listed in `/etc/autodeploy.conf` it asks GitHub: "does `main` have a commit I
-don't have yet?"
+The checking job lives **on the server** (thundertrident): the script
+`/usr/local/bin/autodeploy`, run by the systemd service `autodeploy.service`. Every 10
+minutes (Hermes' `deploy` job asks for a run, see below) it wakes up, and for every
+checkout listed in `~/.local/state/autodeploy/autodeploy.conf` it asks GitHub: "does
+`main` have a commit I don't have yet?"
 
 ```
  laptop                    GitHub                     thundertrident (server)
  ------                    ------                     -----------------------
- git push  ───────────►  IORD1/planflow             every 10 min, autodeploy.timer fires:
+ git push  ───────────►  IORD1/planflow             every 10 min, Hermes asks for a run:
                           main: 0d268c2   ◄───────   git fetch  ("any new commit on main?")
                                                         │
                                               no ◄──────┴──────► yes
@@ -127,9 +128,10 @@ address and is only reachable over Tailscale.
 The timeline after a push is therefore:
 
 1. `git push` finishes on the laptop. GitHub has the commit.
-2. Within at most 10 minutes the timer on the server fires and notices the new commit.
-   In a hurry? `ssh iord@thundertrident 'sudo systemctl start autodeploy.service'` runs
-   the check right now.
+2. Within at most 10 minutes Hermes' `deploy` job asks the server for a run and the
+   script notices the new commit. In a hurry? Press Deploy now on
+   http://thundertrident:8080/#deploys, or `ssh iord@thundertrident 'touch
+   ~/.local/state/autodeploy/trigger'`; both start the run right away.
 3. The server resets its checkout to that commit and rebuilds the image (about 5 to 10
    seconds for this app). If the image actually changed, Compose replaces the running
    container. If only docs changed, the image is identical and the container is left alone.
@@ -146,9 +148,15 @@ git push
 
 That is the whole deploy. What happens on the server:
 
-1. A systemd timer (`autodeploy.timer`) runs `/usr/local/bin/autodeploy` every 10 minutes.
-2. The script reads `/etc/autodeploy.conf`, one app per line. For each, it runs
-   `git fetch` in that directory using a read-only deploy key.
+1. Hermes' `deploy` job (every 10 minutes, or Deploy now) writes the file
+   `~/.local/state/autodeploy/trigger`; the systemd path unit `autodeploy.path` sees it
+   and starts `autodeploy.service`, which runs `/usr/local/bin/autodeploy`. The systemd
+   timer `autodeploy.timer` (at :05, :15, ...) is the fallback: it skips itself when a
+   run finished less than 8 minutes ago, so it only acts while Hermes is down or its
+   `deploy` job is paused.
+2. The script reads `~/.local/state/autodeploy/autodeploy.conf`, one checkout per line
+   (Hermes' Deploys page edits it). For each, it runs `git fetch` in that directory using
+   a read-only deploy key.
 3. If `origin/main` moved since that directory was last deployed, it does
    `git reset --hard origin/main` and, when files under that directory changed,
    `docker compose up -d --build --remove-orphans`, then prunes old images.
@@ -157,30 +165,37 @@ That is the whole deploy. What happens on the server:
 The last deployed commit is remembered per directory in `~/.local/state/autodeploy/`
 on the server. That is what lets several stacks share one repo (the IORD1/homelab repo
 holds `postgres`, `redis`, `sure` and `securo`): a push touching only one folder deploys
-only that folder. A directory with no stamp yet is deployed once regardless.
+only that folder. A directory with no stamp yet is deployed once regardless. The same
+directory holds `last-run` (what the latest run did) and `events.log` (every deploy or
+failure), which Hermes reads for its Deploys page and for the `deploy` job's summary.
+The formats are described at the top of `deploy/autodeploy`.
 
 The server checkout is `~/planflow` on thundertrident, a normal git clone whose remote
 uses the SSH alias `github.com-planflow` (see `~/.ssh/config` there). The `.env` file
 holding `DATABASE_URL` is git-ignored, so a reset never touches it, and the data itself
 lives in the Postgres container, not in this directory.
 
-The script and unit files are kept in this repo under `deploy/` so the setup can be
-rebuilt or copied to another machine.
+The script and unit files (service, timer, path) are kept in this repo under `deploy/`
+so the setup can be rebuilt or copied to another machine. Installing them is a manual
+step (the homelab handbook, section 5, has the commands); pushing this repo only
+rebuilds the Planflow container.
 
 ### Checking a deploy
 
 ```sh
 ssh iord@thundertrident 'journalctl -u autodeploy -n 20 --no-pager'   # what it did and when
+ssh iord@thundertrident 'cat ~/.local/state/autodeploy/last-run'       # the same, as Hermes sees it
 ssh iord@thundertrident 'cd ~/planflow && git log -1 --oneline'        # commit running on the server
-ssh iord@thundertrident 'systemctl list-timers autodeploy.timer'       # next check time
+ssh iord@thundertrident 'systemctl list-timers autodeploy.timer'       # next fallback check
 curl http://thundertrident:8090/api/health                             # {"ok":true}
 ```
 
 A failed build logs `DEPLOY FAILED`; the previous container keeps running in that case,
 and the deploy is retried on every run (every 10 minutes) until it succeeds.
-Fix the problem, push again, and the next tick retries. The interval lives in
-`deploy/autodeploy.timer` (`OnUnitActiveSec`); after changing it, reinstall the file to
-`/etc/systemd/system/` and run `sudo systemctl daemon-reload`.
+Fix the problem, push again, and the next run retries. The 10-minute cadence is the
+`deploy` job's cron in the Hermes repo (`jobs/deploy.js`); the fallback timer's calendar
+lives in `deploy/autodeploy.timer` (`OnCalendar`). After changing a unit file, reinstall
+it to `/etc/systemd/system/` and run `sudo systemctl daemon-reload`.
 
 ### Adding another app to auto-deploy
 
@@ -193,7 +208,8 @@ Fix the problem, push again, and the next tick retries. The interval lives in
 3. If it needs a database: `~/homelab/postgres/new-db.sh <app>` on the server, put the
    printed `DATABASE_URL` in `~/<app>/.env`, and join the `homelab` network in its compose
    file (see the `homelab` repo README).
-4. Add a line to `/etc/autodeploy.conf`: `/home/iord/<app> main`.
+4. Add `/home/iord/<app>` on http://thundertrident:8080/#deploys (or append
+   `/home/iord/<app> main` to `~/.local/state/autodeploy/autodeploy.conf`).
 
 ### Manual deploy (fallback)
 
@@ -203,7 +219,8 @@ If the timer is stopped or you want to deploy a branch by hand:
 ssh iord@thundertrident 'cd ~/planflow && git fetch && git reset --hard origin/main && docker compose up -d --build'
 ```
 
-Or run the script once: `ssh iord@thundertrident 'sudo systemctl start autodeploy.service'`.
+Or run the script once: `ssh iord@thundertrident 'touch ~/.local/state/autodeploy/trigger'`
+(or `sudo systemctl start autodeploy.service`).
 
 Useful commands on the server (all from `~/planflow`):
 
@@ -213,7 +230,7 @@ docker compose logs -f            # follow logs
 docker compose restart
 docker compose down               # stop and remove the container; the data stays in Postgres
 docker compose up -d              # start again without rebuilding
-sudo systemctl stop autodeploy.timer    # pause auto-deploys; start to resume
+sudo systemctl stop autodeploy.timer autodeploy.path   # pause auto-deploys (also pause the deploy job in Hermes); start to resume
 ```
 
 ### Changing the port
