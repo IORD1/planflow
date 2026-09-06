@@ -28,7 +28,24 @@ const SCHEMA = `
     y          DOUBLE PRECISION NOT NULL DEFAULT 0,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    done_at    TIMESTAMPTZ
+    done_at    TIMESTAMPTZ,
+    deleted_at TIMESTAMPTZ            -- set by DELETE; the row stays a week so the delete can be undone
+  );
+  -- A task's cover: the picture at the top of its card. Either an image the user pasted or a
+  -- link with the preview the server fetched for it (title, site, og:image). One per task,
+  -- the picture itself is stored here as bytes so backups of the database include it.
+  CREATE TABLE IF NOT EXISTS covers (
+    task_id     INTEGER PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+    kind        TEXT NOT NULL CHECK (kind IN ('image', 'link')),
+    url         TEXT,                 -- the link (link covers) or where the picture came from
+    title       TEXT,                 -- page title, or the pasted file's name
+    description TEXT,
+    site        TEXT,                 -- og:site_name or the host name
+    mime        TEXT,                 -- of the stored picture, NULL when there is none
+    image       BYTEA,
+    width       INTEGER,
+    height      INTEGER,
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
   );
   -- from_id must be done before to_id can start ("from blocks to")
   CREATE TABLE IF NOT EXISTS deps (
@@ -44,6 +61,8 @@ const SCHEMA = `
   -- Databases created before the side columns existed (2026-09-03) get them added in place.
   ALTER TABLE deps ADD COLUMN IF NOT EXISTS from_side TEXT NOT NULL DEFAULT 'right' CHECK (from_side IN ('left','right','top','bottom'));
   ALTER TABLE deps ADD COLUMN IF NOT EXISTS to_side   TEXT NOT NULL DEFAULT 'left'  CHECK (to_side   IN ('left','right','top','bottom'));
+  -- Databases created before undoable deletes existed (2026-09-06) get the trash column.
+  ALTER TABLE tasks ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
   CREATE INDEX IF NOT EXISTS idx_tasks_board ON tasks(board_id);
   CREATE INDEX IF NOT EXISTS idx_deps_board  ON deps(board_id);
   CREATE INDEX IF NOT EXISTS idx_deps_to     ON deps(to_id);

@@ -5,6 +5,8 @@
   const panel = $('#panel'), toastEl = $('#toast'), boardSelect = $('#boardSelect'), edgeUnlink = $('#edgeUnlink');
   const boardMenu = $('#boardMenu'), zoomLabel = $('#zoomLabel');
   const NODE_W = 210, MIN_S = 0.2, MAX_S = 3, DRAG_THRESHOLD = 4;
+  const IMAGE_MAX_PX = 1280;     // pasted images are shrunk to this on their long side before upload
+  const ARM_MS = 4000;           // how long a delete button stays at "Really?"
   const isMobile = () => window.innerWidth <= 760;
 
   const state = {
@@ -38,14 +40,21 @@
     return el;
   }
   let toastTimer;
-  function toast(msg) {
-    toastEl.textContent = msg; toastEl.classList.add('show');
-    clearTimeout(toastTimer); toastTimer = setTimeout(() => toastEl.classList.remove('show'), 2800);
+  // toast('Deleted "x"', { action: { label: 'Undo', run }, ms: 7000 }) shows a button in the toast.
+  function toast(msg, opts = {}) {
+    const kids = [h('span', {}, msg)];
+    if (opts.action) kids.push(h('button', { class: 'toast-action', onclick: () => { toastEl.classList.remove('show'); opts.action.run(); } }, opts.action.label));
+    toastEl.replaceChildren(...kids);
+    toastEl.classList.toggle('actionable', !!opts.action);
+    toastEl.classList.add('show');
+    clearTimeout(toastTimer); toastTimer = setTimeout(() => toastEl.classList.remove('show'), opts.ms || 2800);
   }
+  // JSON in and out; a Blob body (an image) is sent as-is with its own content type.
   async function api(method, url, body) {
+    const blob = body instanceof Blob;
     const res = await fetch(url, {
-      method, headers: body ? { 'Content-Type': 'application/json' } : undefined,
-      body: body ? JSON.stringify(body) : undefined,
+      method, headers: body ? { 'Content-Type': blob ? (body.type || 'application/octet-stream') : 'application/json' } : undefined,
+      body: body ? (blob ? body : JSON.stringify(body)) : undefined,
     });
     const data = res.status === 204 ? null : await res.json().catch(() => null);
     if (!res.ok) throw new Error((data && data.error) || `${res.status} ${res.statusText}`);
@@ -56,6 +65,13 @@
     set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
   };
   const fmtDate = (iso) => iso ? new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : '';
+  const hostOf = (url) => { try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return url; } };
+  // A pasted/dropped text that is exactly one web address, normalised; else null.
+  function urlIn(text) {
+    const s = (text || '').trim();
+    if (!/^https?:\/\/\S+$/i.test(s)) return null;
+    try { return new URL(s).href; } catch { return null; }
+  }
 
   // ---------------------------------------------------------------- graph helpers
   const blockersOf = (id) => state.deps.filter((d) => d.to === id).map((d) => state.tasks.get(d.from)).filter(Boolean);
@@ -132,13 +148,24 @@
       applyView();
     });
   }
+  // A free spot in the middle of the view for a new card.
+  function centerSpot() {
+    const r = viewport.getBoundingClientRect();
+    let p = clientToWorld(r.left + r.width / 2, r.top + r.height / 2);
+    p = { x: p.x - NODE_W / 2, y: p.y - 24 };
+    const taken = (x, y) => [...state.tasks.values()].some((t) => Math.abs(t.x - x) < 20 && Math.abs(t.y - y) < 20);
+    while (taken(p.x, p.y)) { p.x += 30; p.y += 30; }
+    return p;
+  }
 
   // ---------------------------------------------------------------- nodes
   function makeNode(t) {
     const el = h('div', { class: 'node', 'data-id': t.id },
-      h('button', { class: 'check', 'aria-label': 'Toggle done' }, '✓'),
-      h('div', { class: 'title' }),
-      h('div', { class: 'meta' }, h('span', { class: 'badge' })),
+      h('div', { class: 'cover', hidden: true }),
+      h('div', { class: 'body' },
+        h('button', { class: 'check', 'aria-label': 'Toggle done' }, '✓'),
+        h('div', { class: 'title' }),
+        h('div', { class: 'meta' }, h('span', { class: 'badge' }))),
       ...SIDES.map((s) => h('div', { class: 'port ' + s, 'data-side': s, title: 'Drag onto another task: that task will wait for this one' })));
     updateNode(el, t);
     return el;
@@ -147,12 +174,38 @@
     const st = stateOf(t);
     el.className = 'node ' + st + (isSel('task', t.id) ? ' selected' : '');
     el.style.left = t.x + 'px'; el.style.top = t.y + 'px';
-    $('.title', el).textContent = t.title;
+    const title = $('.title', el);
+    if (title.textContent !== t.title) title.textContent = t.title;   // leave the caret alone while it is being typed
+    renderCover(el, t);
     const n = blockersOf(t.id).filter((b) => b.status !== 'done').length;
     $('.badge', el).textContent = st === 'done' ? 'Done' : st === 'ready' ? 'Ready' : `Blocked by ${n}`;
     $('.check', el).title = st === 'blocked' ? 'Finish its blockers first' : st === 'done' ? 'Reopen' : 'Mark done';
   }
+  // The picture / link preview at the top of a card. Rebuilt only when the cover changed,
+  // so the image is not reloaded on every redraw.
+  const coverSrc = (t) => `/api/tasks/${t.id}/cover-image?v=${t.cover.v}`;
+  function renderCover(el, t) {
+    const box = $('.cover', el), c = t.cover;
+    const key = c ? JSON.stringify(c) : '';
+    if (box.dataset.key === key) return;
+    box.dataset.key = key;
+    box.className = 'cover' + (c ? ' ' + c.kind : '');
+    box.hidden = !c;
+    box.replaceChildren();
+    if (!c) return;
+    if (c.image) {
+      const img = h('img', { src: coverSrc(t), alt: '', draggable: 'false', onload: renderEdges, onerror: (e) => { e.target.hidden = true; renderEdges(); } });
+      if (c.width && c.height) img.style.aspectRatio = `${c.width} / ${c.height}`;   // reserve the space before it loads
+      box.append(img);
+    }
+    if (c.kind === 'link') {
+      box.append(h('div', { class: 'link-meta', title: 'Open ' + c.url },
+        h('div', { class: 'lt' }, c.title || c.url),
+        h('div', { class: 'ls' }, h('b', {}, '↗ '), c.pending ? 'fetching preview…' : (c.site || hostOf(c.url)))));
+    }
+  }
   function renderAll() {
+    endEdit();
     nodesLayer.replaceChildren(); nodeEls.clear();
     for (const t of state.tasks.values()) { const el = makeNode(t); nodesLayer.appendChild(el); nodeEls.set(t.id, el); }
     renderEdges(); renderPanel(); renderProgress();
@@ -167,6 +220,58 @@
     $('#progress .bar').style.width = total ? (done / total * 100) + '%' : '0';
     $('#progress .label').textContent = total ? `${done} / ${total} done` : 'no tasks yet';
   }
+
+  // ---------------------------------------------------------------- inline title editing
+  // A new card's title is typed right on the card: the caret lands in it, "New task" is
+  // selected so typing replaces it. Double-click a card (or press Enter) to rename it there.
+  let editing = null;          // { id, el } while a card title is being typed on the canvas
+  let pendingCreate = 0;       // tasks being created (waiting for the server)
+  let typeAhead = '';          // keys typed while that wait lasts, they become the new title
+  function editTitle(id, opts = {}) {
+    const t = state.tasks.get(id), el = nodeEls.get(id); if (!t || !el) return;
+    if (isMobile()) {           // the bottom sheet covers the canvas on a phone: type in the panel instead
+      const inp = $('.title-input', panel); if (inp) { inp.focus(); inp.select(); }
+      return;
+    }
+    if (editing && editing.id !== id) endEdit();
+    const ti = $('.title', el);
+    ti.setAttribute('contenteditable', 'plaintext-only');
+    if (!ti.isContentEditable) ti.setAttribute('contenteditable', 'true');   // browsers without plaintext-only
+    editing = { id, el: ti };
+    const typed = opts.fresh ? typeAhead : ''; typeAhead = '';
+    if (typed) { ti.textContent = typed; t.title = typed; scheduleSave(id, { title: typed }); syncPanelTitle(t); }
+    ti.focus();
+    const range = document.createRange(); range.selectNodeContents(ti);
+    if (typed) range.collapse(false);
+    const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(range);
+  }
+  function endEdit() {
+    if (!editing) return;
+    const { id, el: ti } = editing; editing = null;
+    ti.removeAttribute('contenteditable');
+    const t = state.tasks.get(id); if (!t) return;
+    t.title = (ti.textContent || '').replace(/\s+/g, ' ').trim() || 'Untitled';
+    ti.textContent = t.title;
+    scheduleSave(id, { title: t.title }); flushSave();
+    syncPanelTitle(t); renderEdges();
+  }
+  function syncPanelTitle(t) {
+    const inp = $('.title-input', panel);
+    if (inp && isSel('task', t.id) && document.activeElement !== inp && inp.value !== t.title) inp.value = t.title;
+  }
+  nodesLayer.addEventListener('input', (e) => {
+    if (!editing || e.target !== editing.el) return;
+    const t = state.tasks.get(editing.id); if (!t) return;
+    t.title = editing.el.textContent;
+    scheduleSave(t.id, { title: t.title.trim() || 'Untitled' });
+    syncPanelTitle(t); renderEdges();
+  });
+  nodesLayer.addEventListener('keydown', (e) => {
+    if (!editing || e.target !== editing.el) return;
+    // stopPropagation: the document handler must not see this key (Enter would start a new edit)
+    if (e.key === 'Enter' || e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); e.target.blur(); }
+  });
+  nodesLayer.addEventListener('focusout', (e) => { if (editing && e.target === editing.el) endEdit(); });
 
   // ---------------------------------------------------------------- edges
   // A link leaves its source card and enters its target card through one of four sides.
@@ -258,10 +363,10 @@
   }
 
   // ---------------------------------------------------------------- selection + panel
-  function select(sel, opts = {}) {
+  function select(sel) {
     state.selected = sel;
     for (const [id, el] of nodeEls) el.classList.toggle('selected', isSel('task', id));
-    renderEdges(); renderPanel(opts);
+    renderEdges(); renderPanel();
     if (isMobile()) panel.classList.toggle('open', !!sel);
   }
   let pendingSave = null, saveTimer;
@@ -285,7 +390,29 @@
       h('span', { class: 'dot ' + st }), h('span', { class: 't' }, t.title), extra);
   }
   const setPanel = (...kids) => panel.replaceChildren(...kids.filter(Boolean));
-  function renderPanel(opts = {}) {
+  function coverSection(t) {
+    const c = t.cover;
+    const fileInput = h('input', { type: 'file', accept: 'image/*', hidden: true,
+      onchange: (e) => { const f = e.target.files[0]; if (f) setImageCover(t.id, f); } });
+    const askLink = () => {
+      const u = prompt('Link (http…)'); if (!u) return;
+      const url = urlIn(u); if (!url) { toast('That is not a web address.'); return; }
+      setLinkCover(t.id, url, false);
+    };
+    const body = !c ? h('div', { class: 'empty' }, 'Paste an image or a link (Ctrl+V) with this task selected, or drop one on its card.')
+      : c.kind === 'image' ? h('img', { class: 'cover-thumb', src: coverSrc(t), alt: '' })
+      : h('div', { class: 'link-card' },
+          h('a', { href: c.url, target: '_blank', rel: 'noopener' }, c.title || c.url),
+          c.description ? h('div', { class: 'small muted desc' }, c.description) : null,
+          h('div', { class: 'small muted' }, c.pending ? 'fetching preview…' : (c.site || hostOf(c.url))));
+    return h('section', {}, h('h4', {}, 'Cover'), body,
+      h('div', { class: 'row' },
+        h('button', { onclick: () => fileInput.click() }, c ? 'Replace image…' : 'Image…'),
+        h('button', { onclick: askLink }, 'Link…'),
+        c ? h('button', { class: 'danger', onclick: () => removeCover(t.id) }, 'Remove') : null,
+        fileInput));
+  }
+  function renderPanel() {
     const closeBtn = h('button', { id: 'panelClose', class: 'icon', onclick: () => panel.classList.remove('open') }, '✕');
     const sel = state.selected;
     const t = sel && sel.type === 'task' ? state.tasks.get(sel.id) : null;
@@ -299,6 +426,7 @@
       const notes = h('textarea', { placeholder: 'Notes, links, acceptance criteria…',
         oninput: (e) => { t.notes = e.target.value; scheduleSave(t.id, { notes: t.notes }); }, onblur: flushSave });
       notes.value = t.notes || '';
+      const armedNow = isArmed(t.id);
       setPanel(
         h('div', { class: 'panel-head' }, h('span', { class: 'badge ' + st }, st === 'done' ? 'Done' : st === 'ready' ? 'Ready to start' : `Blocked by ${blockers.filter((b) => b.status !== 'done').length}`), h('span', { class: 'spacer' }), closeBtn),
         titleInput, notes,
@@ -306,14 +434,16 @@
           st === 'blocked'
             ? h('button', { disabled: true, title: 'Finish its blockers first' }, 'Blocked')
             : h('button', { class: st === 'done' ? '' : 'primary', onclick: () => setDone(t.id, st !== 'done') }, st === 'done' ? 'Reopen' : 'Mark done'),
-          h('button', { class: 'danger', onclick: () => deleteTask(t.id) }, 'Delete')),
+          h('button', { class: 'danger delete' + (armedNow ? ' armed' : ''), 'data-label': 'Delete', title: 'Click twice. Deleting can be undone.',
+            onclick: (e) => armedDelete(t.id, e.currentTarget) }, armedNow ? 'Really?' : 'Delete')),
         st === 'blocked' ? h('div', { class: 'small' }, h('button', { class: 'link', onclick: () => setDone(t.id, true, true) }, 'Mark done anyway')) : null,
+        coverSection(t),
         h('section', {}, h('h4', {}, `Waits for (${blockers.length})`),
           blockers.length ? h('ul', {}, blockers.map((b) => taskRow(b, unlinkBtn(b.id, t.id)))) : h('div', { class: 'empty' }, 'Nothing. This task can start any time.')),
         h('section', {}, h('h4', {}, `Unlocks (${dependents.length})`),
           dependents.length ? h('ul', {}, dependents.map((d) => taskRow(d, unlinkBtn(t.id, d.id)))) : h('div', { class: 'empty' }, 'Nothing depends on this yet. Drag its ● handle onto a task to link.')),
         h('div', { class: 'muted small' }, `Created ${fmtDate(t.created_at)}` + (t.done_at ? ` · Done ${fmtDate(t.done_at)}` : '')));
-      if (opts.focusTitle) { titleInput.focus(); titleInput.select(); }
+      if (armedNow) armed.btn = $('button.delete', panel);
       return;
     }
     const d = sel && sel.type === 'edge' ? state.deps.find((x) => x.from === sel.from && x.to === sel.to) : null;
@@ -349,32 +479,67 @@
       h('section', {}, h('h4', {}, 'Blocked'), list(groups.blocked, 'No blocked tasks.')),
       h('section', {}, h('h4', {}, 'Done'), list(groups.done, 'Nothing done yet.')),
       h('div', { class: 'tips' },
-        h('div', {}, h('kbd', {}, 'N'), ' new task · ', h('kbd', {}, 'A'), ' arrange · ', h('kbd', {}, 'F'), ' fit view'),
-        h('div', {}, h('kbd', {}, 'Del'), ' remove selected task or link · ', h('kbd', {}, 'Esc'), ' deselect'),
+        h('div', {}, h('kbd', {}, 'N'), ' new task, then just type its name · ', h('kbd', {}, 'A'), ' arrange · ', h('kbd', {}, 'F'), ' fit view'),
+        h('div', {}, h('kbd', {}, 'Del'), ' twice removes the selected task (', h('kbd', {}, 'Ctrl+Z'), ' undoes) · ', h('kbd', {}, 'Enter'), ' rename · ', h('kbd', {}, 'Esc'), ' deselect'),
         h('div', {}, 'Right-click a task, a link, or empty space for a menu · middle-click adds a task under the cursor.'),
+        h('div', {}, 'Paste an image or a link (', h('kbd', {}, 'Ctrl+V'), ') to give the selected task a cover, or to make a new task when nothing is selected.'),
         h('div', {}, 'A link A → B means B waits for A. Tasks light up blue when everything they wait for is done.')));
   }
 
+  // ---------------------------------------------------------------- undo
+  // Deleting a task or a link pushes an entry here; Ctrl+Z or the toast's Undo button runs it.
+  const undoStack = [];
+  function pushUndo(entry) {
+    undoStack.push(entry); if (undoStack.length > 30) undoStack.shift();
+    toast(entry.label, { action: { label: 'Undo', run: () => runUndo(entry) }, ms: 7000 });
+  }
+  async function runUndo(entry) {
+    const i = undoStack.lastIndexOf(entry); if (i < 0) return;   // already undone
+    undoStack.splice(i, 1);
+    try { await entry.run(); } catch (e) { toast('Undo failed: ' + e.message); }
+  }
+  function undoLast() {
+    if (!undoStack.length) { toast('Nothing to undo.'); return; }
+    runUndo(undoStack[undoStack.length - 1]);
+  }
+
+  // ---------------------------------------------------------------- two-click delete
+  // The first click on a delete control turns it into "Really?"; a second click within ARM_MS
+  // deletes. The armed task is remembered here so the panel button, the context menu and the
+  // Delete key all share it.
+  let armed = null;   // { id, btn, timer }
+  const isArmed = (id) => !!armed && armed.id === id;
+  function disarm() {
+    if (!armed) return;
+    clearTimeout(armed.timer);
+    const b = armed.btn; armed = null;
+    if (b && b.isConnected) { b.textContent = b.dataset.label || 'Delete'; b.classList.remove('armed'); }
+  }
+  function armedDelete(id, btn) {
+    if (isArmed(id)) { deleteTask(id); return true; }
+    disarm();
+    armed = { id, btn, timer: setTimeout(disarm, ARM_MS) };
+    if (btn) { btn.dataset.label = btn.dataset.label || btn.textContent; btn.textContent = 'Really?'; btn.classList.add('armed'); }
+    return false;
+  }
+
   // ---------------------------------------------------------------- mutations
+  // opts: after (id to link from), title, notes, focus:false to leave the title alone.
   async function createTask(x, y, opts = {}) {
+    pendingCreate++;
     try {
-      const t = await api('POST', `/api/boards/${state.boardId}/tasks`, { title: 'New task', x: Math.round(x), y: Math.round(y) });
+      const t = await api('POST', `/api/boards/${state.boardId}/tasks`, { title: opts.title || 'New task', notes: opts.notes || '', x: Math.round(x), y: Math.round(y) });
       state.tasks.set(t.id, t);
       const el = makeNode(t); nodesLayer.appendChild(el); nodeEls.set(t.id, el);
       renderProgress();
       if (opts.after && state.tasks.has(opts.after)) await addDep(opts.after, t.id, { quiet: true });
-      select({ type: 'task', id: t.id }, { focusTitle: !isMobile() });
-      if (isMobile()) { const inp = $('.title-input', panel); if (inp) { inp.focus(); inp.select(); } }
-    } catch (e) { toast(e.message); }
+      select({ type: 'task', id: t.id });
+      if (opts.focus !== false) editTitle(t.id, { fresh: true });
+      return t;
+    } catch (e) { toast(e.message); return null; }
+    finally { pendingCreate--; if (!pendingCreate) typeAhead = ''; }
   }
-  function addAtCenter() {
-    const r = viewport.getBoundingClientRect();
-    let p = clientToWorld(r.left + r.width / 2, r.top + r.height / 2);
-    p = { x: p.x - NODE_W / 2, y: p.y - 24 };
-    const taken = (x, y) => [...state.tasks.values()].some((t) => Math.abs(t.x - x) < 20 && Math.abs(t.y - y) < 20);
-    while (taken(p.x, p.y)) { p.x += 30; p.y += 30; }
-    createTask(p.x, p.y);
-  }
+  function addAtCenter() { const p = centerSpot(); createTask(p.x, p.y); }
   async function setDone(id, done, force = false) {
     const t = state.tasks.get(id); if (!t) return;
     if (done && !force && stateOf(t) === 'blocked') {
@@ -391,18 +556,34 @@
       }
     } catch (e) { toast(e.message); }
   }
+  function removeTaskLocally(id) {
+    if (editing && editing.id === id) editing = null;
+    state.tasks.delete(id);
+    state.deps = state.deps.filter((d) => d.from !== id && d.to !== id);
+    nodeEls.get(id)?.remove(); nodeEls.delete(id);
+    if (isSel('task', id)) state.selected = null;
+    refreshNodes();
+    if (isMobile()) panel.classList.remove('open');
+  }
+  // Deletes are soft on the server (a week in the trash), so undo just asks for the task back.
   async function deleteTask(id) {
     const t = state.tasks.get(id); if (!t) return;
-    if (!confirm(`Delete "${t.title}"?`)) return;
+    disarm(); hideCtx();
+    if (pendingSave && pendingSave.id === id) { clearTimeout(saveTimer); pendingSave = null; }
     try {
       await api('DELETE', `/api/tasks/${id}`);
-      state.tasks.delete(id);
-      state.deps = state.deps.filter((d) => d.from !== id && d.to !== id);
-      nodeEls.get(id)?.remove(); nodeEls.delete(id);
-      if (isSel('task', id)) state.selected = null;
-      refreshNodes();
-      if (isMobile()) panel.classList.remove('open');
+      removeTaskLocally(id);
+      pushUndo({ label: `Deleted "${t.title}"`, run: () => restoreTask(id) });
     } catch (e) { toast(e.message); }
+  }
+  async function restoreTask(id) {
+    const r = await api('POST', `/api/tasks/${id}/restore`);
+    if (r.task.board_id !== state.boardId) { toast(`Restored "${r.task.title}" on its own board.`); return; }
+    state.tasks.set(r.task.id, r.task);
+    for (const d of r.deps) if (!state.deps.some((x) => x.from === d.from && x.to === d.to)) state.deps.push(d);
+    if (!nodeEls.has(r.task.id)) { const el = makeNode(r.task); nodesLayer.appendChild(el); nodeEls.set(r.task.id, el); }
+    select({ type: 'task', id: r.task.id }); refreshNodes();
+    toast(`Restored "${r.task.title}"`);
   }
   async function addDep(from, to, opts = {}) {
     if (from === to) return;
@@ -424,17 +605,119 @@
     } catch (e) { toast(e.message); }
   }
   async function deleteDep(from, to) {
+    const d = state.deps.find((x) => x.from === from && x.to === to);
     try {
       await api('DELETE', `/api/deps/${from}/${to}`);
-      state.deps = state.deps.filter((d) => !(d.from === from && d.to === to));
+      state.deps = state.deps.filter((x) => !(x.from === from && x.to === to));
       if (isSel('edge', { from, to })) state.selected = null;
       refreshNodes();
+      if (d) pushUndo({ label: `Unlinked "${titleOf(from)}" → "${titleOf(to)}"`, run: () => addDep(from, to, { fromSide: d.from_side, toSide: d.to_side, quiet: true }) });
     } catch (e) { toast(e.message); }
   }
+  // Delete key: links go at once (undoable); a task needs a second press, like the button.
   function deleteSelected() {
     const s = state.selected; if (!s) return;
-    if (s.type === 'edge') deleteDep(s.from, s.to); else deleteTask(s.id);
+    if (s.type === 'edge') { deleteDep(s.from, s.to); return; }
+    if (!state.tasks.has(s.id)) return;
+    if (!armedDelete(s.id, $('button.delete', panel))) toast(`Press Delete again to remove "${titleOf(s.id)}"`);
   }
+
+  // ---------------------------------------------------------------- covers (pasted images and links)
+  // Shrink a pasted image in the browser so a phone screenshot does not become a 5 MB row.
+  async function shrinkImage(file) {
+    const bmp = await createImageBitmap(file).catch(() => null);
+    if (!bmp) return { blob: file, width: null, height: null };
+    const s = Math.min(1, IMAGE_MAX_PX / Math.max(bmp.width, bmp.height));
+    const width = Math.max(1, Math.round(bmp.width * s)), height = Math.max(1, Math.round(bmp.height * s));
+    if (s === 1 && file.size < 400 * 1024 && file.type !== 'image/svg+xml') { bmp.close(); return { blob: file, width, height }; }
+    const c = document.createElement('canvas'); c.width = width; c.height = height;
+    c.getContext('2d').drawImage(bmp, 0, 0, width, height); bmp.close();
+    let blob = await new Promise((r) => c.toBlob(r, 'image/webp', 0.85));
+    if (!blob || blob.type !== 'image/webp') blob = await new Promise((r) => c.toBlob(r, 'image/jpeg', 0.85));
+    return { blob: blob || file, width, height };
+  }
+  // A pasted image usually has no useful name ("image.png"); a chosen file does.
+  const imageName = (file) => (file.name && !/^(image|blob|unknown|clipboard|pasted)[-_ ]?\w*\.\w+$/i.test(file.name) ? file.name.replace(/\.\w+$/, '') : '');
+  // Merge a task the server sent back, but keep a title/notes edit that has not been saved yet.
+  function applyTask(nt) {
+    const t = state.tasks.get(nt.id); if (!t) return;
+    const keep = pendingSave && pendingSave.id === t.id ? { title: t.title, notes: t.notes } : {};
+    if (editing && editing.id === t.id) keep.title = t.title;
+    Object.assign(t, nt, keep);
+    const el = nodeEls.get(t.id); if (el) updateNode(el, t);
+    renderEdges(); if (isSel('task', t.id)) renderPanel();
+  }
+  async function setImageCover(id, file) {
+    const t = state.tasks.get(id); if (!t) return;
+    try {
+      const { blob, width, height } = await shrinkImage(file);
+      const qs = new URLSearchParams();
+      const name = imageName(file); if (name) qs.set('name', name);
+      if (width && height) { qs.set('w', width); qs.set('h', height); }
+      applyTask(await api('POST', `/api/tasks/${id}/cover?${qs}`, blob));
+    } catch (e) { toast('Could not add the image: ' + e.message); }
+  }
+  // rename: also take the page's title as the task title (new cards made by pasting a link).
+  async function setLinkCover(id, url, rename) {
+    const t = state.tasks.get(id); if (!t) return;
+    const before = t.cover;
+    t.cover = { kind: 'link', url, site: hostOf(url), pending: true, v: 0 };   // show the card right away
+    const el = nodeEls.get(id); if (el) updateNode(el, t); renderEdges(); if (isSel('task', id)) renderPanel();
+    try { applyTask(await api('POST', `/api/tasks/${id}/cover`, { url, rename: !!rename })); }
+    catch (e) { t.cover = before; if (el) updateNode(el, t); renderEdges(); toast('Could not add the link: ' + e.message); }
+  }
+  async function removeCover(id) {
+    try { applyTask(await api('DELETE', `/api/tasks/${id}/cover`)); } catch (e) { toast(e.message); }
+  }
+  // A pasted or dropped image / link becomes the cover of task `into`, else of the selected
+  // task, else of a new task (at world point `at`, or in the middle of the view).
+  async function addCover({ file, url, into, at }) {
+    let t = into != null ? state.tasks.get(into) : null;
+    if (!t && state.selected && state.selected.type === 'task') t = state.tasks.get(state.selected.id);
+    const fresh = !t;
+    if (fresh) {
+      const p = at ? { x: at.x - NODE_W / 2, y: at.y - 24 } : centerSpot();
+      t = await createTask(p.x, p.y, { title: file ? (imageName(file) || 'Image') : hostOf(url), focus: false });
+      if (!t) return;
+    }
+    if (file) { await setImageCover(t.id, file); if (!fresh) toast(`Image added to "${t.title}"`); }
+    else if (url) { await setLinkCover(t.id, url, fresh); if (!fresh) toast(`Link added to "${t.title}"`); }
+  }
+  // Plain text pasted on the canvas: a new card, first line as the title, the rest as notes.
+  function pasteText(text, at) {
+    const lines = text.replace(/\r/g, '').split('\n').map((l) => l.trim()).filter(Boolean);
+    if (!lines.length) return;
+    const p = at ? { x: at.x - NODE_W / 2, y: at.y - 24 } : centerSpot();
+    createTask(p.x, p.y, { title: lines[0].slice(0, 300), notes: lines.slice(1).join('\n'), focus: false });
+  }
+  const imageIn = (dt) => [...(dt.files || [])].find((f) => f.type.startsWith('image/')) || null;
+  document.addEventListener('paste', (e) => {
+    const cd = e.clipboardData; if (!cd || !state.boardId) return;
+    const file = imageIn(cd);
+    if (file) { e.preventDefault(); addCover({ file }); return; }
+    const text = cd.getData('text/plain');
+    if (editing && e.target === editing.el) {       // into a card title: plain text, one line
+      e.preventDefault(); document.execCommand('insertText', false, text.replace(/\s*\n\s*/g, ' '));
+      return;
+    }
+    if (e.target.matches?.('input, textarea') || e.target.isContentEditable || !text.trim()) return;
+    e.preventDefault();
+    const url = urlIn(text);
+    if (url) addCover({ url }); else pasteText(text);
+  });
+  // Dropping an image file or a link on the canvas does the same; on a card it goes to that card.
+  const droppable = (dt) => dt && [...dt.types].some((t) => t === 'Files' || t === 'text/uri-list' || t === 'text/plain');
+  viewport.addEventListener('dragover', (e) => { if (droppable(e.dataTransfer)) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; } });
+  viewport.addEventListener('drop', (e) => {
+    const dt = e.dataTransfer; if (!dt || !state.boardId) return;
+    const file = imageIn(dt);
+    const uri = (dt.getData('text/uri-list') || '').split('\n').find((l) => l.trim() && !l.startsWith('#'));
+    const url = urlIn(uri) || urlIn(dt.getData('text/plain'));
+    if (!file && !url) return;
+    e.preventDefault();
+    const node = nodeAtPoint(e.clientX, e.clientY);
+    addCover({ file, url, into: node ? +node.dataset.id : null, at: clientToWorld(e.clientX, e.clientY) });
+  });
 
   // ---------------------------------------------------------------- auto arrange
   async function arrange() {
@@ -518,7 +801,11 @@
   function finishNodeDrag(g) {
     const el = nodeEls.get(g.id); el?.classList.remove('dragging');
     const t = state.tasks.get(g.id); if (!t) return;
-    if (!g.moved) { select({ type: 'task', id: g.id }); return; }
+    if (!g.moved) {
+      select({ type: 'task', id: g.id });
+      if (g.link) window.open(g.link, '_blank', 'noopener');   // a click on a link cover's text opens the page
+      return;
+    }
     t.x = Math.round(t.x); t.y = Math.round(t.y);
     updateNode(el, t); renderEdges();
     api('PATCH', `/api/tasks/${t.id}`, { x: t.x, y: t.y }).catch((e) => toast('Could not save position: ' + e.message));
@@ -526,6 +813,7 @@
   viewport.addEventListener('pointerdown', (e) => {
     if (e.pointerType === 'mouse' && e.button !== 0 && e.button !== 1) return;
     if (e.target.closest('.check, #edgeUnlink')) return;         // handled by click
+    if (e.target.isContentEditable) return;                      // typing a title on the card: let the browser place the caret
     pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     try { viewport.setPointerCapture(e.pointerId); } catch {}
     if (pointers.size === 2 && e.pointerType === 'touch') { startPinch(); return; }
@@ -542,7 +830,8 @@
         cur: null, target: null, targetSide: null };
     } else if (nodeEl) {
       const t = state.tasks.get(+nodeEl.dataset.id);
-      gesture = { ...base, type: 'node', id: t.id, ox: t.x, oy: t.y };
+      const link = e.target.closest('.link-meta') && t.cover && t.cover.kind === 'link' ? t.cover.url : null;
+      gesture = { ...base, type: 'node', id: t.id, ox: t.x, oy: t.y, link };
       nodeEl.classList.add('dragging');
     } else if (hit) {
       gesture = { ...base, type: 'edge', from: +hit.dataset.from, to: +hit.dataset.to };
@@ -649,7 +938,11 @@
     zoomAt(e.clientX, e.clientY, Math.exp(-dy * (e.ctrlKey ? 0.01 : 0.0018)));
   }, { passive: false });
   viewport.addEventListener('dblclick', (e) => {
-    if (e.target.closest('.node, .edge-hit, #edgeUnlink')) return;
+    // Pointer capture makes the browser deliver this to the viewport, so look under the pointer, not at e.target.
+    const under = document.elementFromPoint(e.clientX, e.clientY);
+    if (!under || under.closest('.edge-hit, #edgeUnlink, .check, .port') || under.isContentEditable) return;
+    const nodeEl = under.closest('.node');
+    if (nodeEl) { editTitle(+nodeEl.dataset.id); return; }   // double-click a card: rename it there
     const w = clientToWorld(e.clientX, e.clientY);
     createTask(w.x - NODE_W / 2, w.y - 24);
   });
@@ -664,10 +957,14 @@
   const ctxMenu = h('div', { class: 'menu ctx', hidden: true });
   document.body.appendChild(ctxMenu);
   function hideCtx() { ctxMenu.hidden = true; }
+  // An item with `arm: taskId` is a two-click delete: the first click relabels it "Really?".
   function showCtx(items, cx, cy) {
-    ctxMenu.replaceChildren(...items.map((it) => it === '-' ? h('div', { class: 'sep' })
-      : h('button', { class: it.danger ? 'danger' : '', disabled: !!it.disabled, title: it.title,
-        onclick: () => { hideCtx(); it.run(); } }, it.label)));
+    ctxMenu.replaceChildren(...items.map((it) => {
+      if (it === '-') return h('div', { class: 'sep' });
+      const btn = h('button', { class: it.danger ? 'danger' : '', disabled: !!it.disabled, title: it.title }, it.label);
+      btn.addEventListener('click', () => { if (it.arm) { armedDelete(it.arm, btn); return; } hideCtx(); it.run(); });
+      return btn;
+    }));
     ctxMenu.hidden = false;
     ctxMenu.style.left = Math.max(4, Math.min(cx, window.innerWidth - ctxMenu.offsetWidth - 4)) + 'px';
     ctxMenu.style.top = Math.max(4, Math.min(cy, window.innerHeight - ctxMenu.offsetHeight - 4)) + 'px';
@@ -681,6 +978,7 @@
     renderEdges();
   }
   viewport.addEventListener('contextmenu', (e) => {
+    if (e.target.isContentEditable) return;                     // the browser's own menu (paste, spelling) while typing a title
     e.preventDefault();
     if (e.target.closest('#edgeUnlink')) return;
     cancelGesture();
@@ -695,10 +993,13 @@
         st === 'done' ? { label: 'Reopen', run: () => setDone(id, false) }
           : st === 'blocked' ? { label: 'Mark done anyway', title: 'It still waits for unfinished tasks', run: () => setDone(id, true, true) }
           : { label: 'Mark done', run: () => setDone(id, true) },
-        { label: 'Add next step \u2192', title: 'New task to the right that waits for this one', run: () => createTask(t.x + NODE_W + 90, t.y, { after: id }) },
+        { label: 'Rename', run: () => editTitle(id) },
+        { label: 'Add next step →', title: 'New task to the right that waits for this one', run: () => createTask(t.x + NODE_W + 90, t.y, { after: id }) },
+        t.cover && t.cover.kind === 'link' ? { label: 'Open link ↗', run: () => window.open(t.cover.url, '_blank', 'noopener') } : null,
+        t.cover ? { label: 'Remove cover', run: () => removeCover(id) } : null,
         '-',
-        { label: 'Delete task', danger: true, run: () => deleteTask(id) },
-      ], e.clientX, e.clientY);
+        { label: 'Delete task', danger: true, arm: id, title: 'Click twice. Can be undone with Ctrl+Z.' },
+      ].filter(Boolean), e.clientX, e.clientY);
     } else if (hit) {
       const from = +hit.dataset.from, to = +hit.dataset.to;
       select({ type: 'edge', from, to });
@@ -710,7 +1011,8 @@
         '-',
         { label: 'Arrange', run: arrange },
         { label: 'Fit view', run: () => fitView(true) },
-      ], e.clientX, e.clientY);
+        undoStack.length ? { label: 'Undo: ' + undoStack[undoStack.length - 1].label, run: undoLast } : null,
+      ].filter(Boolean), e.clientX, e.clientY);
     }
   });
   // Stop the browser's middle-click autoscroll / paste so middle-click can mean "new task".
@@ -721,10 +1023,16 @@
   document.addEventListener('keydown', (e) => {
     const inField = e.target.matches('input, textarea, select') || e.target.isContentEditable;
     if (inField) { if (e.key === 'Escape') e.target.blur(); return; }
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && (e.key === 'z' || e.key === 'Z')) { e.preventDefault(); undoLast(); return; }
     if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if (pendingCreate) {                    // a card is on its way: what is typed now becomes its title
+      if (e.key.length === 1) { typeAhead += e.key; e.preventDefault(); }
+      return;
+    }
     switch (e.key) {
-      case 'Escape': select(null); boardMenu.hidden = true; hideCtx(); break;
+      case 'Escape': select(null); boardMenu.hidden = true; hideCtx(); disarm(); break;
       case 'Delete': case 'Backspace': e.preventDefault(); deleteSelected(); break;
+      case 'Enter': if (state.selected && state.selected.type === 'task') { e.preventDefault(); editTitle(state.selected.id); } break;
       case 'n': case 'N': e.preventDefault(); addAtCenter(); break;
       case 'f': case 'F': fitView(true); break;
       case 'a': case 'A': arrange(); break;
@@ -739,6 +1047,7 @@
   async function openBoard(id, keepView = false) {
     flushSave();
     const data = await api('GET', `/api/boards/${id}`);
+    if (state.boardId !== id) { undoStack.length = 0; disarm(); }
     state.boardId = id; state.board = data.board;
     state.tasks = new Map(data.tasks.map((t) => [t.id, t]));
     state.deps = data.deps;
@@ -789,7 +1098,7 @@
 
   // Re-sync when the tab comes back (e.g. edited from the phone meanwhile).
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible' && state.boardId && !gesture) {
+    if (document.visibilityState === 'visible' && state.boardId && !gesture && !editing) {
       loadBoards().then(() => openBoard(state.boardId, true)).catch(() => {});
     }
   });

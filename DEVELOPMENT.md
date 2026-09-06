@@ -16,7 +16,7 @@ Project layout:
 ```
 server.js            HTTP server, API, queries and seed
 db.js                Postgres connection pool, schema (CREATE TABLE IF NOT EXISTS), helpers
-scripts/             api-test.mjs + ui-test.mjs (run against a local server), migrate-sqlite.js (one-off import)
+scripts/             api-test.mjs, ui-test.mjs, ui-test-cards.mjs (run against a local server), migrate-sqlite.js (one-off import)
 public/index.html    page skeleton, top bar, SVG arrow markers
 public/app.js        all frontend logic
 public/style.css     all styling (colour tokens at the top in :root)
@@ -52,14 +52,35 @@ There is no build step and no cache, the server sends files fresh each time.
   The box width is `--node-w` there and `NODE_W` at the top of `app.js`; keep them equal.
 - Keyboard shortcuts are in the `keydown` handler near the end of `app.js`.
 - The side panel is built entirely in `renderPanel()`. The overview and the task
-  editor are the two branches of that function.
-- How a box looks is `makeNode()` and `updateNode()`.
+  editor are the two branches of that function; `coverSection()` is the Cover part.
+- How a box looks is `makeNode()` and `updateNode()`; the picture or link preview at
+  the top is `renderCover()`. Card height changes when a cover loads, and links and
+  Arrange measure real heights, so anything that changes a card's size should end with
+  `renderEdges()`.
+- Typing a title on the card is `editTitle()` / `endEdit()`; the two-click delete is
+  `armedDelete()`; undo is `pushUndo()` (task deletes and unlinks push entries).
+- Paste and drop live under the "covers" heading: `addCover()` decides which task gets
+  it, `setImageCover()` shrinks and uploads, `setLinkCover()` asks the server for the
+  preview.
 
 **Server or schema changes**: edit `server.js` (routes and queries) or `db.js` (schema).
 
 - New routes: add a `route('METHOD', '/api/path/:id', handler)` line. Numeric path
   parts become `params`, the parsed JSON body is `body`. Return a value for a 200, or
   `[status, value]` for something else. Throw `new HttpError(409, 'why')` for errors.
+  A route declared with `{ raw: true }` gets a non-JSON body as a `raw` Buffer (that is
+  how the cover image arrives, up to `MAX_UPLOAD`); return a `new Raw(status, headers,
+  buffer)` to answer with bytes instead of JSON (the cover-image route).
+- Tasks are never deleted straight away: `DELETE` stamps `deleted_at`, and every query
+  that lists or looks up tasks filters on `deleted_at IS NULL` (`q.task`, `tasksOfBoard`,
+  `depsOfBoard`, the counts). A new query that touches tasks must do the same, or a
+  deleted task leaks back in. `q.taskAny` is the one exception, for restore.
+- Link previews are fetched by the server (`linkPreview()`), so the container needs
+  outbound network access; from inside Docker, a Tailscale name such as
+  `thundertrident` may not resolve, in which case the card gets a bare link cover.
+  Limits are the constants at the top of `server.js` (`FETCH_TIMEOUT`, `MAX_HTML`,
+  `MAX_PREVIEW_IMAGE`). Pictures are stored in the `covers` table as `BYTEA`, so they
+  are in the database dumps; the browser shrinks pasted images to 1280 px first.
 - New columns: add them to the `CREATE TABLE` in `db.js` **and** add an
   `ALTER TABLE ... ADD COLUMN IF NOT EXISTS ...` line after it for databases that
   already exist, because `CREATE TABLE IF NOT EXISTS` does nothing on an existing table.
@@ -89,13 +110,17 @@ delete it again, so run them **only against a local server on a throwaway databa
 (see "Running locally" above), never against the live app:
 
 ```sh
-PLANFLOW_URL=http://localhost:8093 node scripts/api-test.mjs   # link endpoints, sides, cycles
-PLANFLOW_URL=http://localhost:8093 node scripts/ui-test.mjs    # drives headless Chrome through the real UI
+PLANFLOW_URL=http://localhost:8093 node scripts/api-test.mjs        # links, sides, cycles, trash/restore, covers
+PLANFLOW_URL=http://localhost:8093 node scripts/ui-test.mjs         # headless Chrome: dragging link handles
+PLANFLOW_URL=http://localhost:8093 node scripts/ui-test-cards.mjs   # headless Chrome: middle-click + type, two-click delete, undo, paste
 ```
 
-`ui-test.mjs` needs Google Chrome at `/usr/bin/google-chrome` (or set `CHROME=`). It drags
-links between cards with synthetic mouse events, checks what the server stored and what
-the SVG drew, and leaves a screenshot `sides.png` in `$SCRATCH` (default: the temp dir).
+The UI tests need Google Chrome at `/usr/bin/google-chrome` (or set `CHROME=`). They drive
+the real page with synthetic mouse and key events, check what the server stored and what
+the DOM shows, and leave screenshots (`sides.png`, `cards.png`) in `$SCRATCH` (default:
+the temp dir). The cards test fakes a paste with a synthetic `ClipboardEvent`, since
+headless Chrome has no clipboard, and pastes a link to the local server itself to test
+the preview fetch without touching the internet.
 
 ## Deploying to thundertrident
 
@@ -275,3 +300,11 @@ is the one-off importer that moved it into Postgres.
   `no-cache`, but a browser can still hold onto an open tab's script.
 - **The app is blank / "Could not load"**: the API is failing. Open
   http://thundertrident:8090/api/boards in the browser; the error message says why.
+- **A pasted link shows only the host name, no title or picture**: the server could not
+  fetch the page within 8 seconds. From inside the container, names on the Tailscale
+  network (`thundertrident`, other machines) may not resolve, some sites refuse bots,
+  and private pages need a login the server does not have. Paste the link again once
+  the site is reachable, or accept the bare link.
+- **Someone deleted a task by mistake and the tab is gone**: for seven days it is still
+  in the table with `deleted_at` set. `curl -X POST http://thundertrident:8090/api/tasks/<id>/restore`
+  brings it back; find the id with Adminer (`SELECT id, title FROM tasks WHERE deleted_at IS NOT NULL`).
