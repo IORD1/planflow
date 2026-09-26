@@ -19,7 +19,9 @@ db.js                Postgres connection pool, schema (CREATE TABLE IF NOT EXIST
 scripts/             api-test.mjs, ui-test.mjs, ui-test-cards.mjs (run against a local server), migrate-sqlite.js (one-off import)
 public/index.html    page skeleton, top bar, SVG arrow markers
 public/app.js        all frontend logic
-public/style.css     all styling (colour tokens at the top in :root)
+public/style.css     all styling (colour tokens at the top in :root; the 760 px phone rules and the
+                     coarse-pointer rules at the end)
+public/manifest.webmanifest, public/sw.js, public/icons/   the PWA: installable on the phone (README "On the phone")
 Dockerfile           node:24-alpine, npm ci, copies server.js + db.js + public/
 docker-compose.yml   one service, port 8090, joins the external `homelab` network
 deploy/              auto-deploy script, systemd units and config used on the server

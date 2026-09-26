@@ -5,9 +5,24 @@
   const panel = $('#panel'), toastEl = $('#toast'), boardSelect = $('#boardSelect'), edgeUnlink = $('#edgeUnlink');
   const boardMenu = $('#boardMenu'), zoomLabel = $('#zoomLabel');
   const NODE_W = 210, MIN_S = 0.2, MAX_S = 3, DRAG_THRESHOLD = 4;
+  const MOBILE_FIT_S = 0.6;   // the smallest scale Fit goes to on a phone (fitView)
   const IMAGE_MAX_PX = 1280;     // pasted images are shrunk to this on their long side before upload
   const ARM_MS = 4000;           // how long a delete button stays at "Really?"
   const isMobile = () => window.innerWidth <= 760;
+  // List mode, for the phone: the panel (ready / blocked / done, then a task's details) is
+  // the whole screen and the canvas is hidden. Remembered per browser; nothing on a desktop.
+  let listMode = false;
+  try { listMode = localStorage.getItem('planflow.list') === '1'; } catch {}
+  const inList = () => isMobile() && listMode;
+  function setListMode(on) {
+    listMode = on;
+    try { localStorage.setItem('planflow.list', on ? '1' : '0'); } catch {}
+    document.body.classList.toggle('list', on);
+    const b = document.getElementById('btnList');
+    if (b) { b.textContent = on ? 'Board' : 'List'; b.setAttribute('aria-pressed', String(on)); }
+    if (on) panel.classList.add('open');
+    else if (isMobile()) panel.classList.toggle('open', !!state.selected);
+  }
 
   const state = {
     boards: [], boardId: null, board: null,
@@ -131,7 +146,9 @@
       maxX = Math.max(maxX, t.x + el.offsetWidth); maxY = Math.max(maxY, t.y + el.offsetHeight);
     }
     const pad = isMobile() ? 24 : 60;
-    const s = clamp(Math.min((r.width - pad * 2) / (maxX - minX), (r.height - pad * 2) / (maxY - minY), 1.2), MIN_S, MAX_S);
+    // On a phone a fit that shows everything is unreadable (a board of 40 cards lands at 20%),
+    // so the scale stops at MOBILE_FIT_S: the cards stay legible and the rest is a pan away.
+    const s = clamp(Math.min((r.width - pad * 2) / (maxX - minX), (r.height - pad * 2) / (maxY - minY), 1.2), isMobile() ? Math.max(MIN_S, MOBILE_FIT_S) : MIN_S, MAX_S);
     const apply = () => {
       state.view = { s, x: (r.width - (maxX - minX) * s) / 2 - minX * s, y: (r.height - (maxY - minY) * s) / 2 - minY * s };
       applyView();
@@ -367,7 +384,8 @@
     state.selected = sel;
     for (const [id, el] of nodeEls) el.classList.toggle('selected', isSel('task', id));
     renderEdges(); renderPanel();
-    if (isMobile()) panel.classList.toggle('open', !!sel);
+    if (inList()) panel.classList.add('open');
+    else if (isMobile()) panel.classList.toggle('open', !!sel);
   }
   let pendingSave = null, saveTimer;
   function scheduleSave(id, patch) {
@@ -386,7 +404,7 @@
   }
   function taskRow(t, extra) {
     const st = stateOf(t);
-    return h('li', { class: 'clickable', onclick: () => { select({ type: 'task', id: t.id }); centerOn(t.id); } },
+    return h('li', { class: 'clickable', onclick: () => { select({ type: 'task', id: t.id }); if (!inList()) centerOn(t.id); } },
       h('span', { class: 'dot ' + st }), h('span', { class: 't' }, t.title), extra);
   }
   const setPanel = (...kids) => panel.replaceChildren(...kids.filter(Boolean));
@@ -413,7 +431,9 @@
         fileInput));
   }
   function renderPanel() {
-    const closeBtn = h('button', { id: 'panelClose', class: 'icon', onclick: () => panel.classList.remove('open') }, '✕');
+    const closeBtn = inList()
+      ? h('button', { id: 'panelClose', class: 'icon', title: 'Back to the list', onclick: () => select(null) }, '← Back')
+      : h('button', { id: 'panelClose', class: 'icon', onclick: () => panel.classList.remove('open') }, '✕');
     const sel = state.selected;
     const t = sel && sel.type === 'task' ? state.tasks.get(sel.id) : null;
     if (t) {
@@ -470,7 +490,7 @@
     groups.done.sort((a, b) => (b.done_at || '').localeCompare(a.done_at || ''));
     const list = (arr, empty) => arr.length ? h('ul', {}, arr.map((x) => taskRow(x))) : h('div', { class: 'empty' }, empty);
     setPanel(
-      h('div', { class: 'panel-head' }, h('h3', {}, state.board ? state.board.name : 'Board'), closeBtn),
+      h('div', { class: 'panel-head' }, h('h3', {}, state.board ? state.board.name : 'Board'), inList() ? h('button', { class: 'primary', onclick: addAtCenter }, '+ Task') : closeBtn),
       h('div', { class: 'stats' },
         h('div', { class: 'stat ready' }, h('b', {}, groups.ready.length), h('span', {}, 'ready')),
         h('div', { class: 'stat' }, h('b', {}, groups.blocked.length), h('span', {}, 'blocked')),
@@ -506,7 +526,8 @@
   // ---------------------------------------------------------------- two-click delete
   // The first click on a delete control turns it into "Really?"; a second click within ARM_MS
   // deletes. The armed task is remembered here so the panel button, the context menu and the
-  // Delete key all share it.
+  // Delete key all share it. The board menu's Delete uses the same two clicks (`run` is then
+  // deleteBoard); there is no browser confirm() anywhere.
   let armed = null;   // { id, btn, timer }
   const isArmed = (id) => !!armed && armed.id === id;
   function disarm() {
@@ -515,8 +536,8 @@
     const b = armed.btn; armed = null;
     if (b && b.isConnected) { b.textContent = b.dataset.label || 'Delete'; b.classList.remove('armed'); }
   }
-  function armedDelete(id, btn) {
-    if (isArmed(id)) { deleteTask(id); return true; }
+  function armedDelete(id, btn, run = deleteTask) {
+    if (isArmed(id)) { run(id); return true; }
     disarm();
     armed = { id, btn, timer: setTimeout(disarm, ARM_MS) };
     if (btn) { btn.dataset.label = btn.dataset.label || btn.textContent; btn.textContent = 'Really?'; btn.classList.add('armed'); }
@@ -563,7 +584,7 @@
     nodeEls.get(id)?.remove(); nodeEls.delete(id);
     if (isSel('task', id)) state.selected = null;
     refreshNodes();
-    if (isMobile()) panel.classList.remove('open');
+    if (isMobile() && !inList()) panel.classList.remove('open');
   }
   // Deletes are soft on the server (a week in the trash), so undo just asks for the task back.
   async function deleteTask(id) {
@@ -1030,7 +1051,7 @@
       return;
     }
     switch (e.key) {
-      case 'Escape': select(null); boardMenu.hidden = true; hideCtx(); disarm(); break;
+      case 'Escape': select(null); closeBoardMenu(); hideCtx(); disarm(); break;
       case 'Delete': case 'Backspace': e.preventDefault(); deleteSelected(); break;
       case 'Enter': if (state.selected && state.selected.type === 'task') { e.preventDefault(); editTitle(state.selected.id); } break;
       case 'n': case 'N': e.preventDefault(); addAtCenter(); break;
@@ -1068,8 +1089,9 @@
     const name = prompt('Rename board', state.board.name); if (!name || !name.trim() || name.trim() === state.board.name) return;
     try { await api('PATCH', `/api/boards/${state.boardId}`, { name: name.trim() }); await loadBoards(); state.board.name = name.trim(); renderPanel(); } catch (e) { toast(e.message); }
   }
+  // Second click on the board menu's Delete (see armedDelete). Unlike a task, a board is gone for good.
   async function deleteBoard() {
-    if (!confirm(`Delete board "${state.board.name}" and all ${state.tasks.size} of its tasks? This cannot be undone.`)) return;
+    disarm(); boardMenu.hidden = true;
     try {
       await api('DELETE', `/api/boards/${state.boardId}`);
       await loadBoards();
@@ -1078,23 +1100,38 @@
     } catch (e) { toast(e.message); }
   }
   boardSelect.addEventListener('change', () => openBoard(+boardSelect.value).catch((e) => toast(e.message)));
+  const boardArmId = () => 'board:' + state.boardId;
+  function closeBoardMenu() { boardMenu.hidden = true; if (isArmed(boardArmId())) disarm(); }
   $('#btnBoardMenu').addEventListener('click', (e) => {
     e.stopPropagation();
+    if (!boardMenu.hidden) { closeBoardMenu(); return; }
     const r = e.currentTarget.getBoundingClientRect();
     boardMenu.style.left = Math.min(r.left, window.innerWidth - 190) + 'px'; boardMenu.style.top = (r.bottom + 6) + 'px';
-    boardMenu.hidden = !boardMenu.hidden;
+    boardMenu.hidden = false;
   });
   boardMenu.addEventListener('click', (e) => {
-    const act = e.target.closest('button')?.dataset.act; boardMenu.hidden = true;
-    if (act === 'new') newBoard(); else if (act === 'rename') renameBoard(); else if (act === 'delete') deleteBoard();
+    const btn = e.target.closest('button'); if (!btn) return;
+    const act = btn.dataset.act;
+    if (act === 'delete') {
+      // The menu stays open, the item red, for the second click.
+      if (!armedDelete(boardArmId(), btn, deleteBoard)) toast(`Press Delete board again to delete "${state.board.name}" and its ${state.tasks.size} tasks. This cannot be undone.`, { ms: ARM_MS });
+      return;
+    }
+    closeBoardMenu();
+    if (act === 'new') newBoard(); else if (act === 'rename') renameBoard();
   });
-  document.addEventListener('click', (e) => { if (!e.target.closest('#boardMenu, #btnBoardMenu')) boardMenu.hidden = true; if (!e.target.closest('.menu.ctx')) hideCtx(); });
+  document.addEventListener('click', (e) => { if (!e.target.closest('#boardMenu, #btnBoardMenu')) closeBoardMenu(); if (!e.target.closest('.menu.ctx')) hideCtx(); });
   window.addEventListener('resize', hideCtx);
 
   $('#btnAdd').addEventListener('click', addAtCenter);
   $('#btnArrange').addEventListener('click', arrange);
   $('#btnFit').addEventListener('click', () => fitView(true));
-  $('#btnPanel').addEventListener('click', () => panel.classList.toggle('open'));
+  $('#btnList').addEventListener('click', () => setListMode(!listMode));
+  setListMode(listMode);
+  window.addEventListener('resize', () => { if (!isMobile()) { document.body.classList.remove('list'); panel.classList.remove('open'); } else setListMode(listMode); });
+
+  // Installable on the phone: the service worker (sw.js) caches the shell and never the API.
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch((e) => console.warn('service worker:', e.message));
 
   // Re-sync when the tab comes back (e.g. edited from the phone meanwhile).
   document.addEventListener('visibilitychange', () => {

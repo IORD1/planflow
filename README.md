@@ -46,11 +46,27 @@ dumps every database to the HDD every six hours. See [DEVELOPMENT.md](DEVELOPMEN
 | Complete a task | click its circle (only when nothing it waits for is unfinished) |
 | Delete a task | `Delete` (panel or right-click) turns into **Really?**, click again. Or press `Delete` twice. `Ctrl+Z` or the toast's `Undo` brings it back, links included |
 | Task menu | right-click a task: mark done, rename, add next step, open link / remove cover, delete |
+| Delete a board | board menu (next to the board name), `Delete board` turns red, click again. Boards are not in the trash: this one is for good |
 | Edit title / notes | click the task, edit in the side panel |
 | Tidy the layout | `Arrange` / `A` — columns by dependency depth |
-| Zoom / pan | scroll wheel or pinch / drag empty space, `F` fits everything |
+| Zoom / pan | scroll wheel or pinch / drag empty space, `F` fits everything (on a phone it stops at 60%, so cards stay readable) |
+| On a phone | `List` in the top bar shows the board as ready / blocked / done lists; tap a task for its details (mark done, notes, links, cover), `← Back` returns. `Board` goes back to the canvas. Tapping a card on the canvas opens its details as a bottom sheet |
 
 Links can never form a loop; the server rejects it and the UI warns before trying.
+
+## On the phone (PWA)
+
+Planflow is installable: `public/manifest.webmanifest`, the icons in `public/icons/`, and a
+service worker (`public/sw.js`, registered at the end of `app.js`) that caches the shell
+network-first (a deploy shows on the next open, the cached copy only steps in when the
+server is away) and never `/api`. Installed, it opens full screen; the `List` mode is the
+one to use there. Chrome installs only from a secure origin, and http://thundertrident:8090
+is not one: serve it over Tailscale HTTPS on its own port (once HTTPS certificates are
+enabled for the tailnet, see "On the phone" in the Hermes README):
+
+```sh
+tailscale serve --bg --https=8090 8090     # https://thundertrident.<tailnet>.ts.net:8090
+```
 
 ## API
 

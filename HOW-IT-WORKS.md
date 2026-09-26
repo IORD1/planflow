@@ -70,7 +70,9 @@ focused instead, because the bottom sheet would cover the card.
 There is no confirmation dialog. A delete control asks for a second click instead:
 the first click turns it into a red **Really?** (the panel button, the right-click item,
 or the `Delete` key, which arms the panel button), the second click within four seconds
-deletes. Clicking anything else, or waiting, disarms it.
+deletes. Clicking anything else, or waiting, disarms it. The board menu's `Delete board`
+works the same way (the menu stays open, red, for the second click), and that one has no
+undo: the board and its tasks are gone.
 
 A deleted task goes to a trash on the server rather than away: its links and its cover
 go with it. A toast offers `Undo`, `Ctrl+Z` does the same, and the right-click menu on
@@ -134,8 +136,13 @@ the **Cover** section (the picture or link preview, `Image…`, `Link…`, `Remo
 lists. **Waits for** are the tasks that must finish first (each has an ✕ to unlink).
 **Unlocks** are the tasks that are waiting on this one.
 
-On a phone the panel is a bottom sheet. It slides up when you tap a task and can be
-toggled with the ☰ button.
+On a phone the panel is a bottom sheet that slides up when you tap a task. The `List`
+button in the top bar switches to **list mode**: the panel fills the screen (ready,
+blocked and done lists with a `+ Task` button; a task's details with `← Back`) and the
+canvas is hidden, which is the comfortable way to work through a board with a thumb.
+`Board` brings the canvas back. The choice is remembered on that phone. `Fit` on a phone
+never goes below 60%, so cards stay readable; the rest of the board is a pan away. Touch
+targets (the done circle, the link handles, list rows, buttons) are larger on touch screens.
 
 ## Boards
 

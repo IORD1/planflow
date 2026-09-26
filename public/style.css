@@ -249,4 +249,26 @@ main { flex: 1; display: flex; min-height: 0; }
   }
   #panel.open { transform: translateY(0); }
   #panelClose { display: inline-block; }
+  /* list mode (the List button): the panel is the screen, the canvas is hidden */
+  body.list #viewport { display: none; }
+  body.list #panel { position: relative; transform: none; max-height: none; flex: 1; min-height: 0; border: none; border-radius: 0; box-shadow: none; }
+  body.list #panel .tips { display: none; }
+  body.list #btnAdd { display: none; }   /* the overview has its own + Task, nearer the thumb */
+}
+
+/* fingers, not pointers: bigger targets on the cards, in the lists and on the buttons */
+@media (pointer: coarse) {
+  button { min-height: 40px; }
+  button.icon { min-width: 40px; }
+  .menu button { min-height: 44px; }
+  #topbar select { min-height: 40px; }
+  .node .body { grid-template-columns: 26px 1fr; }
+  .node .check { width: 24px; height: 24px; }
+  .port { width: 22px; height: 22px; }
+  .port.right, .port.left { margin-top: -11px; }
+  .port.top, .port.bottom { margin-left: -11px; }
+  .port.right { right: -12px; } .port.left { left: -12px; } .port.top { top: -12px; } .port.bottom { bottom: -12px; }
+  #panel li { min-height: 44px; }
+  #panel .title-input, #panel textarea { font-size: 16px; }   /* under 16px iOS zooms the page on focus */
+  #panel .row > button { min-height: 44px; }
 }
