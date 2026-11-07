@@ -20,7 +20,7 @@ const UA = 'Mozilla/5.0 (compatible; Planflow/1.0; +https://github.com/IORD1/pla
 const { all, one, run, tx } = db;
 
 const BOARD_SUMMARY = `
-  SELECT b.id, b.name, b.created_at, b.archived_at,
+  SELECT b.id, b.name, b.created_at, b.archived_at, b.home_x, b.home_y,
          (SELECT COUNT(*)::int FROM tasks t WHERE t.board_id = b.id AND t.deleted_at IS NULL) AS total,
          (SELECT COUNT(*)::int FROM tasks t WHERE t.board_id = b.id AND t.deleted_at IS NULL AND t.status = 'done') AS done,
          (SELECT MAX(t.updated_at) FROM tasks t WHERE t.board_id = b.id AND t.deleted_at IS NULL) AS updated_at
@@ -42,6 +42,7 @@ const q = {
   renameBoard: (name, id) => run('UPDATE boards SET name = $1 WHERE id = $2', [name, id]),
   deleteBoard: (id) => run('DELETE FROM boards WHERE id = $1', [id]),
   // Archive = hide from the board list and park the card in the home page's archive box; unarchive clears it.
+  setBoardHome: (x, y, id) => run('UPDATE boards SET home_x = $1, home_y = $2 WHERE id = $3', [x, y, id]),
   setBoardArchived: (on, id) => run(
     'UPDATE boards SET archived_at = CASE WHEN $1 THEN COALESCE(archived_at, now()) ELSE NULL END WHERE id = $2', [on, id]),
   // For the thumbnails on the home page: every live task's spot and state, and every live link, all boards at once.
@@ -354,10 +355,16 @@ route('GET', '/api/boards/:id', async ({ params }) => {
   return { board, tasks: tasks.map(taskOut), deps };
 });
 
-// {name} renames, {archived: true|false} moves the board into or out of the home page's archive.
+// {name} renames, {archived: true|false} moves the board into or out of the home page's archive,
+// {home_x, home_y} is where its card was dropped on the home page (null, null: back to automatic).
 route('PATCH', '/api/boards/:id', async ({ params, body }) => {
   const board = (await q.board(params.id)) || notFound('board');
   if (body.name !== undefined) await q.renameBoard(cleanTitle(body.name), board.id);
+  if (body.home_x !== undefined || body.home_y !== undefined) {
+    const x = body.home_x, y = body.home_y;
+    if (!((x === null && y === null) || (isNum(x) && isNum(y)))) bad('home_x and home_y must both be numbers, or both null');
+    await q.setBoardHome(x, y, board.id);
+  }
   if (body.archived !== undefined) {
     if (typeof body.archived !== 'boolean') bad('archived must be true or false');
     await q.setBoardArchived(body.archived, board.id);

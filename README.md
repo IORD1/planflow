@@ -8,8 +8,9 @@ you can start right now. Paste an image or a link and it becomes the card's cove
 Trello-style. Deleting takes two clicks and can be undone.
 
 The home page shows every plan as a card, YouTube style: a coloured thumbnail with the
-plan's flow sketched on it, each card leaning a little. Drag a card onto the cardboard
-box in the bottom-left corner to archive it; click the box to get archived plans back.
+plan's flow sketched on it, each card leaning a little. Drag a card anywhere and it
+stays there; drag it onto the cardboard box in the bottom-left corner to archive it, and
+click the box to get archived plans back.
 The ☀ / ☾ button in the top bar switches between day and dark mode.
 
 Node's built-in HTTP server, PostgreSQL through the `pg` driver (the only dependency), vanilla JS frontend.
@@ -43,6 +44,7 @@ dumps every database to the HDD every six hours. See [DEVELOPMENT.md](DEVELOPMEN
 | --- | --- |
 | Open a plan | click its card on the home page (the Planflow logo always goes back home). A plan's address is `#/board/<id>`, so bookmarks and the back button work |
 | New plan | `+ New plan` on the home page, or `N` there |
+| Move a plan's card | drag it anywhere on the home page; the spot is remembered. `Back into the grid` in its ⋯ menu forgets it |
 | Archive a plan | drag its card onto the box bottom left, or `Archive` in the card's ⋯ menu (long-press on a phone) or the board menu. The toast's `Undo` or `Ctrl+Z` brings it back |
 | Archived plans | click the box: a list with `Restore` and `Delete` (two clicks) |
 | Day / dark mode | the ☀ / ☾ button in the top bar. Follows the system until you choose |

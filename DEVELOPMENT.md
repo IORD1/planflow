@@ -67,10 +67,12 @@ There is no build step and no cache, the server sends files fresh each time.
   preview.
 - The home page is the "home page" section near the end of `app.js`: `renderHome()`
   fetches `/api/overview` and builds a `planCard()` per board; `planLook()` turns the id
-  into the thumbnail colour and the tilt (change the `3 + … * 7` there for another tilt
-  range); `miniFlow()` draws the thumbnail SVG. Dragging a card onto the box is the
-  `planGrid` pointer handlers (`liftPlan`, `moveGhost`, `endPlanDrag`); `archiveBoard()`
-  does the PATCH and pushes the undo. Navigation is the hash (`route()`, `goHome()`,
+  into the thumbnail colour and the tilt (change the `1 + … * 4` there for another tilt
+  range); `miniFlow()` draws the thumbnail SVG; `layoutHome()` places the cards (saved
+  `home_x`/`home_y`, else the next free grid cell; `PLAN_W`/`PLAN_H` there must match the
+  card size in `style.css`). Dragging a card, to a new spot or onto the box, is the
+  `planGrid` pointer handlers (`movePlan`, `endPlanDrag`); `archiveBoard()` does the
+  archive PATCH and pushes the undo. Navigation is the hash (`route()`, `goHome()`,
   `goBoard()`); `showHome()` / `leaveHome()` swap `body.home`. Colours for both themes
   are the tokens at the top of `style.css`; `applyTheme()` in `app.js` flips them.
 

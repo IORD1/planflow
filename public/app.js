@@ -1222,7 +1222,7 @@
   function leaveHome() {
     if (!state.home) return;
     state.home = false; document.body.classList.remove('home');
-    closeDrawer(); hideCtx(); endPlanDrag({ type: 'pointercancel', pointerId: planDrag && planDrag.pid });
+    closeDrawer(); hideCtx(); if (planDrag) endPlanDrag({ type: 'pointercancel', pointerId: planDrag.pid });
   }
   function closeDrawer() { archiveDrawer.hidden = true; }
   // The same plan always gets the same colours and tilt: a hash of its id, not Math.random(),
@@ -1236,7 +1236,7 @@
     const h1 = Math.floor(rnd(id, 1) * 360), h2 = (h1 + 30 + Math.floor(rnd(id, 2) * 70)) % 360;
     const bg = rnd(id, 3) < 0.25 ? `hsl(${h1} 62% 48%)`    // one plan in four is a flat colour
       : `linear-gradient(${Math.floor(rnd(id, 4) * 360)}deg, hsl(${h1} 72% 54%), hsl(${h2} 72% 40%))`;
-    const tilt = (3 + rnd(id, 5) * 7) * (rnd(id, 6) < 0.5 ? -1 : 1);   // 3..10°, clockwise or not
+    const tilt = (1 + rnd(id, 5) * 4) * (rnd(id, 6) < 0.5 ? -1 : 1);   // 1..5°, clockwise or not
     return { bg, tilt: Math.round(tilt * 10) / 10 };
   }
   // The flow drawn small: boxes where the cards are (a cover makes one taller), links between
@@ -1299,6 +1299,30 @@
       h('button', { class: 'icon plan-menu', title: 'Plan options', 'aria-label': 'Plan options',
         onclick: (e) => { e.stopPropagation(); planMenu(b, e.clientX, e.clientY); } }, '⋯'));
   }
+  // Cards sit where they were last dropped (home_x / home_y on the board). A card that was never
+  // moved takes the next free cell of a grid, row by row, most recently edited first, skipping
+  // cells that a placed card covers; those automatic spots are not saved, so they reflow with
+  // the window. On a phone the cards are a plain grid (CSS) and the positions are ignored.
+  const PLAN_W = 260, PLAN_H = 230, PLAN_GAP_X = 32, PLAN_GAP_Y = 40;
+  let homeCards = [];   // [{ b, el }] in recency order, for layoutHome()
+  function layoutHome() {
+    if (!homeCards.length) { planGrid.style.minHeight = ''; return; }
+    const cols = Math.max(1, Math.floor((planGrid.clientWidth + PLAN_GAP_X) / (PLAN_W + PLAN_GAP_X)));
+    const placed = homeCards.filter(({ b }) => b.home_x != null && b.home_y != null).map(({ b }) => ({ l: b.home_x, t: b.home_y, r: b.home_x + PLAN_W, btm: b.home_y + PLAN_H }));
+    const free = (l, t) => !placed.some((p) => l < p.r && l + PLAN_W > p.l && t < p.btm && t + PLAN_H > p.t);
+    let cell = 0, bottom = 0;
+    for (const { b, el } of homeCards) {
+      let x, y;
+      if (b.home_x != null && b.home_y != null) { x = b.home_x; y = b.home_y; }
+      else {
+        for (;; cell++) { x = (cell % cols) * (PLAN_W + PLAN_GAP_X); y = Math.floor(cell / cols) * (PLAN_H + PLAN_GAP_Y); if (free(x, y)) { cell++; break; } }
+      }
+      el.style.left = x + 'px'; el.style.top = y + 'px';
+      bottom = Math.max(bottom, y + PLAN_H);
+    }
+    planGrid.style.minHeight = (bottom + PLAN_GAP_Y) + 'px';
+  }
+  window.addEventListener('resize', () => { if (state.home) layoutHome(); });
   async function renderHome() {
     const { boards } = await api('GET', '/api/overview');
     state.boards = boards.map(({ tasks, deps, ...b }) => b); renderBoards();   // the switcher stays in step with the cards
@@ -1306,9 +1330,11 @@
     const live = boards.filter((b) => !b.archived_at).sort((a, b) => when(b).localeCompare(when(a)));
     const archived = boards.filter((b) => b.archived_at).sort((a, b) => b.archived_at.localeCompare(a.archived_at));
     $('#homeCount').textContent = `${live.length} plan${live.length === 1 ? '' : 's'}` + (archived.length ? ` · ${archived.length} archived` : '');
-    planGrid.replaceChildren(...(live.length ? live.map(planCard)
+    homeCards = live.map((b) => ({ b, el: planCard(b) }));
+    planGrid.replaceChildren(...(live.length ? homeCards.map((c) => c.el)
       : [h('div', { class: 'home-empty' }, h('div', {}, archived.length ? 'Every plan is in the archive box.' : 'No plans yet. A plan is a board of tasks that wait for each other.'),
           h('button', { class: 'primary', onclick: newBoard }, '+ New plan'))]));
+    layoutHome();
     const cnt = $('.archive-count', archiveBox); cnt.textContent = archived.length; cnt.hidden = !archived.length;
     archiveDrawer.replaceChildren(h('h4', {}, `Archived (${archived.length})`),
       archived.length ? h('ul', {}, archived.map((b) => h('li', {},
@@ -1318,58 +1344,62 @@
             onclick: (e) => armedDelete('board:' + b.id, e.currentTarget, () => deletePlan(b.id).catch((err) => toast(err.message))) }, 'Delete'))))
         : h('div', { class: 'empty' }, 'Nothing here. Drag a plan onto the box to archive it.'));
   }
+  async function placePlan(id, x, y) {
+    try { await api('PATCH', `/api/boards/${id}`, { home_x: x, home_y: y }); if (state.home) await renderHome(); } catch (e) { toast(e.message); }
+  }
   function planMenu(b, x, y) {
     if (!b) return;
     showCtx([
       { label: 'Open', run: () => goBoard(b.id) },
       { label: 'Rename', run: () => renameBoard(b.id) },
       b.archived_at ? { label: 'Take out of the archive', run: () => archiveBoard(b.id, false) } : { label: 'Archive', run: () => archiveBoard(b.id) },
+      b.home_x != null && !isMobile() ? { label: 'Back into the grid', title: 'Forget where this card was dropped', run: () => placePlan(b.id, null, null) } : null,
       '-',
       { label: 'Delete plan', danger: true, arm: 'board:' + b.id, title: 'Click twice. Cannot be undone.', run: () => deletePlan(b.id).catch((e) => toast(e.message)) },
     ], x, y);
   }
-  // Mouse / pen: drag a card (a copy follows the pointer) onto the box to archive it; a plain
-  // click opens the plan. A finger scrolls the grid as usual, so on touch the card's ⋯ menu
-  // (or a long press) has Archive instead.
-  let planDrag = null;   // { id, el, pid, sx, sy, touch, timer, ghost, over }
+  // Mouse / pen: drag a card anywhere on the page and it stays there (saved on the board), or
+  // onto the box to archive it; a plain click opens the plan. A finger scrolls the grid as
+  // usual, so on touch the card's ⋯ menu (or a long press) has Archive instead.
+  let planDrag = null;   // { id, el, pid, sx, sy, ox, oy, touch, timer, moving, over }
   planGrid.addEventListener('pointerdown', (e) => {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
     const el = e.target.closest('.plan'); if (!el || e.target.closest('.plan-menu')) return;
     hideCtx(); closeDrawer();
-    planDrag = { id: +el.dataset.id, el, pid: e.pointerId, sx: e.clientX, sy: e.clientY, touch: e.pointerType === 'touch', ghost: null, over: false };
-    if (planDrag.touch) planDrag.timer = setTimeout(() => { const d = planDrag; if (d && !d.ghost) { planDrag = null; planMenu(boardOf(d.id), d.sx, d.sy); } }, 550);
+    planDrag = { id: +el.dataset.id, el, pid: e.pointerId, sx: e.clientX, sy: e.clientY, ox: parseFloat(el.style.left) || 0, oy: parseFloat(el.style.top) || 0,
+      touch: e.pointerType === 'touch' || isMobile(), timer: null, moving: false, over: false };
+    if (planDrag.touch) planDrag.timer = setTimeout(() => { const d = planDrag; if (d && !d.moving) { planDrag = null; planMenu(boardOf(d.id), d.sx, d.sy); } }, 550);
   });
-  function liftPlan(d) {
-    const r = d.el.getBoundingClientRect();
-    const ghost = d.el.cloneNode(true);
-    ghost.className = 'plan plan-ghost'; ghost.removeAttribute('tabindex');
-    ghost.style.setProperty('--w', r.width + 'px'); ghost.style.setProperty('--tilt', d.el.style.getPropertyValue('--tilt'));
-    ghost.querySelector('.plan-menu')?.remove();
-    document.body.append(ghost);
-    d.ghost = ghost; d.el.classList.add('ghosted'); document.body.classList.add('plan-dragging');
-  }
-  function moveGhost(d, x, y) {
-    d.ghost.style.left = x + 'px'; d.ghost.style.top = y + 'px';
-    const under = document.elementFromPoint(x, y);
+  function movePlan(d, e) {
+    const x = Math.max(0, d.ox + e.clientX - d.sx), y = Math.max(0, d.oy + e.clientY - d.sy);
+    d.el.style.left = x + 'px'; d.el.style.top = y + 'px';
+    const under = document.elementFromPoint(e.clientX, e.clientY);
     const over = !!(under && under.closest('#archiveBox'));
-    if (over !== d.over) { d.over = over; archiveBox.classList.toggle('hot', over); d.ghost.classList.toggle('over', over); }
+    if (over !== d.over) { d.over = over; archiveBox.classList.toggle('hot', over); d.el.classList.toggle('over', over); }
+    const need = y + PLAN_H + PLAN_GAP_Y;   // let the page grow so a card can be dropped below everything
+    if (need > parseFloat(planGrid.style.minHeight || 0)) planGrid.style.minHeight = need + 'px';
   }
   planGrid.addEventListener('pointermove', (e) => {
     const d = planDrag; if (!d || e.pointerId !== d.pid) return;
-    if (!d.ghost) {
+    if (!d.moving) {
       if (Math.hypot(e.clientX - d.sx, e.clientY - d.sy) < DRAG_THRESHOLD) return;
       if (d.touch) { clearTimeout(d.timer); planDrag = null; return; }   // a moving finger is scrolling
       try { planGrid.setPointerCapture(e.pointerId); } catch {}
-      liftPlan(d);
+      d.moving = true; d.el.classList.add('lifted'); document.body.classList.add('plan-dragging');
     }
-    moveGhost(d, e.clientX, e.clientY);
+    movePlan(d, e);
   });
   function endPlanDrag(e) {
     const d = planDrag; if (!d || e.pointerId !== d.pid) return;
     planDrag = null; clearTimeout(d.timer);
-    if (!d.ghost) { if (e.type === 'pointerup') goBoard(d.id); return; }
-    archiveBox.classList.remove('hot'); d.el.classList.remove('ghosted'); document.body.classList.remove('plan-dragging'); d.ghost.remove();
-    if (e.type === 'pointerup' && d.over) archiveBoard(d.id);
+    if (!d.moving) { if (e.type === 'pointerup') goBoard(d.id); return; }
+    archiveBox.classList.remove('hot'); d.el.classList.remove('lifted', 'over'); document.body.classList.remove('plan-dragging');
+    if (e.type === 'pointerup' && d.over) { archiveBoard(d.id); return; }
+    if (e.type !== 'pointerup') { layoutHome(); return; }   // cancelled: back where it was
+    const x = Math.round(parseFloat(d.el.style.left)), y = Math.round(parseFloat(d.el.style.top));
+    for (const b of [boardOf(d.id), homeCards.find((c) => c.b.id === d.id)?.b]) if (b) { b.home_x = x; b.home_y = y; }
+    layoutHome();
+    api('PATCH', `/api/boards/${d.id}`, { home_x: x, home_y: y }).catch((err) => toast('Could not save the spot: ' + err.message));
   }
   planGrid.addEventListener('pointerup', endPlanDrag);
   planGrid.addEventListener('pointercancel', endPlanDrag);

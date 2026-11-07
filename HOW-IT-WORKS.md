@@ -32,9 +32,16 @@ The app opens on the home page: every plan (board) as a card in a grid, most rec
 edited first. A card's thumbnail is a colour or gradient picked from the plan's id (so it
 never changes) with the plan's flow sketched on it: a box where each task card sits
 (taller if the card has a cover), the links between them as the same curves the canvas
-draws, done tasks filled in white, blocked ones dashed. Every card leans 3 to 10 degrees,
+draws, done tasks filled in white, blocked ones dashed. Every card leans 1 to 5 degrees,
 clockwise or anticlockwise, again from the id, and straightens when the pointer is on it.
 `done / total` sits in the corner and a thin green bar under the title shows progress.
+
+The page is a free surface, not a fixed grid: drag a card (mouse or pen) and drop it
+anywhere, and that is where it stays (`home_x` / `home_y` on the board). Cards that were
+never moved take the next free cell of a grid, row by row, most recently edited first,
+skipping any cell a placed card covers; those automatic spots are not saved, so they
+reflow with the window. `Back into the grid` in a card's ⋯ menu forgets its spot. On a
+phone the cards are a plain grid and the spots are ignored.
 
 The cardboard box bottom left is the archive. Drag a card onto it (with a mouse or pen:
 the card shrinks into the box as the flaps open) and the plan leaves the grid; a toast

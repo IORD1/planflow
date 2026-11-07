@@ -86,7 +86,7 @@ try {
   // 1. look: a tilt within ±10°, never flat, a gradient or colour, the flow drawn inside
   for (const b of [P1, P2, P3]) {
     const tilt = await ev(`parseFloat(document.querySelector('.plan[data-id="${b.id}"]').style.getPropertyValue('--tilt'))`);
-    assert.ok(Math.abs(tilt) >= 3 && Math.abs(tilt) <= 10, `${b.name}: tilt ${tilt} is within 3..10°`);
+    assert.ok(Math.abs(tilt) >= 1 && Math.abs(tilt) <= 5, `${b.name}: tilt ${tilt} is within 1..5°`);
     const bg = await ev(`document.querySelector('.plan[data-id="${b.id}"] .thumb').style.background`);
     assert.match(bg, /gradient|hsl|rgb/, 'thumbnail has a colour');
   }
@@ -112,13 +112,20 @@ try {
   assert.equal(await ev(`document.querySelector('#toast').textContent`).then((t) => t.includes('Archived')), true, 'toast offers undo');
   console.log('ok dragging a card onto the box archives it');
 
-  // 3. a drag that ends elsewhere does nothing; a plain click opens the plan
-  const r1 = await cardRect(P1.id);
+  // 3. a drag that ends elsewhere moves the card there, and the spot is remembered
+  const pos = (id) => ev(`(() => { const el = document.querySelector('.plan[data-id="${id}"]'); return { x: parseFloat(el.style.left), y: parseFloat(el.style.top) }; })()`);
+  const before = await pos(P1.id), r1 = await cardRect(P1.id);
   await drag(r1.cx, r1.cy, r1.cx + 60, r1.cy + 200);
   await sleep(300);
-  assert.equal((await boardOf(P1.id)).archived_at, null, 'dropped on the grid: not archived');
-  assert.ok((await homeIds()).includes(P1.id), 'still on the home page');
-  console.log('ok a drag that misses the box does nothing');
+  const after = await pos(P1.id);
+  assert.ok(Math.abs(after.x - before.x - 60) < 2 && Math.abs(after.y - before.y - 200) < 2, `card moved by the drag (${JSON.stringify(before)} → ${JSON.stringify(after)})`);
+  await waitFor(async () => { const b = await boardOf(P1.id); return b.home_x === after.x && b.home_y === after.y; }, 'spot saved on the server');
+  assert.equal((await boardOf(P1.id)).archived_at, null, 'dropped on the page: not archived');
+  await reload();
+  assert.deepEqual(await pos(P1.id), after, 'the card is still there after a reload');
+  const others = await ev(`[...document.querySelectorAll('#planGrid .plan')].filter((el) => el.dataset.id !== '${P1.id}').map((el) => ({ x: parseFloat(el.style.left), y: parseFloat(el.style.top) }))`);
+  for (const o of others) assert.ok(o.x + 260 <= after.x || o.x >= after.x + 260 || o.y + 230 <= after.y || o.y >= after.y + 230, 'no automatic card sits under the moved one');
+  console.log('ok a drag elsewhere moves the card, the spot is saved and kept clear');
 
   // 4. the box opens the archived list; Restore brings the plan back
   await click(box.cx, box.cy);

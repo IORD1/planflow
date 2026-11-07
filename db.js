@@ -17,7 +17,9 @@ const SCHEMA = `
     id         INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
     name       TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    archived_at TIMESTAMPTZ           -- set when the plan is dropped into the archive box on the home page
+    archived_at TIMESTAMPTZ,          -- set when the plan is dropped into the archive box on the home page
+    home_x     DOUBLE PRECISION,      -- where the card was last dropped on the home page; NULL = not moved yet,
+    home_y     DOUBLE PRECISION       -- the page puts it in the next free spot
   );
   CREATE TABLE IF NOT EXISTS tasks (
     id         INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
@@ -66,6 +68,8 @@ const SCHEMA = `
   ALTER TABLE tasks ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
   -- Databases created before the home page's archive box existed (2026-11-07).
   ALTER TABLE boards ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ;
+  ALTER TABLE boards ADD COLUMN IF NOT EXISTS home_x DOUBLE PRECISION;
+  ALTER TABLE boards ADD COLUMN IF NOT EXISTS home_y DOUBLE PRECISION;
   CREATE INDEX IF NOT EXISTS idx_tasks_board ON tasks(board_id);
   CREATE INDEX IF NOT EXISTS idx_deps_board  ON deps(board_id);
   CREATE INDEX IF NOT EXISTS idx_deps_to     ON deps(to_id);

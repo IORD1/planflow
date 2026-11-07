@@ -278,18 +278,21 @@ body.home #boardSelect, body.home #btnBoardMenu, body.home #progress, body.home 
 body.home .home-only { display: inline-block; }
 .home-head { display: flex; align-items: baseline; gap: 12px; margin: 0 0 18px; }
 .home-head h1 { margin: 0; font-size: 20px; }
-#planGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 40px 32px; padding: 10px 6px; }
-.home-empty { grid-column: 1 / -1; text-align: center; color: var(--muted); padding: 60px 0; display: flex; flex-direction: column; align-items: center; gap: 14px; }
-/* Every card leans a little (--tilt, ±3..10°, set per plan by app.js) and straightens when the pointer comes. */
+/* A free surface: app.js sets each card's left/top (where it was dropped, or the next free grid cell). */
+#planGrid { position: relative; margin: 10px 6px; }
+.home-empty { text-align: center; color: var(--muted); padding: 60px 0; display: flex; flex-direction: column; align-items: center; gap: 14px; }
+/* Every card leans a little (--tilt, ±1..5°, set per plan by app.js) and straightens when the pointer comes. */
 .plan {
-  position: relative; border-radius: 14px; overflow: hidden; cursor: pointer; outline: none;
+  position: absolute; width: 260px; border-radius: 14px; overflow: hidden; cursor: grab; outline: none;
   background: var(--node); border: 1px solid var(--border); box-shadow: 0 6px 18px var(--shadow);
   transform: rotate(var(--tilt, 0deg)); transition: transform 0.28s cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 0.28s, opacity 0.2s;
   user-select: none; -webkit-user-select: none; touch-action: pan-y; -webkit-touch-callout: none;
 }
 .plan:hover, .plan:focus-visible { transform: rotate(0deg) scale(1.04); z-index: 2; box-shadow: 0 14px 34px var(--shadow-strong); border-color: var(--border-2); }
 .plan:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.plan.ghosted { opacity: 0.3; transform: rotate(var(--tilt, 0deg)) scale(0.96); }
+/* while it is being dragged: lifted, no transition (it must follow the pointer), shrinking over the box */
+.plan.lifted { z-index: 20; transition: transform 0.18s, box-shadow 0.2s; transform: rotate(var(--tilt, 0deg)) scale(1.05); box-shadow: 0 18px 44px var(--shadow-strong); cursor: grabbing; }
+.plan.lifted.over { transform: rotate(0deg) scale(0.35); opacity: 0.9; }
 .thumb { aspect-ratio: 16 / 9; position: relative; overflow: hidden; background: var(--bg-2); }
 .thumb .mini { position: absolute; left: 8%; top: 9%; width: 84%; height: 82%; overflow: visible; }
 .mini .mn { fill: rgba(255, 255, 255, 0.3); stroke: rgba(255, 255, 255, 0.95); }
@@ -309,12 +312,6 @@ body.home .home-only { display: inline-block; }
 .plan-menu { position: absolute; right: 8px; top: 8px; min-height: 0; min-width: 0; height: 28px; padding: 0 9px; line-height: 1; border: none; border-radius: 999px; background: rgba(0, 0, 0, 0.45); color: #fff; opacity: 0; transition: opacity 0.15s; }
 .plan:hover .plan-menu, .plan-menu:focus-visible { opacity: 1; }
 .plan-menu:hover { background: rgba(0, 0, 0, 0.7); }
-/* The copy of a card that follows the pointer while it is dragged; it shrinks when it is over the box. */
-.plan.plan-ghost {
-  position: fixed; z-index: 300; pointer-events: none; width: var(--w); opacity: 0.95; margin: 0;
-  transform: translate(-50%, -50%) rotate(var(--tilt, 0deg)) scale(0.72); box-shadow: 0 18px 44px var(--shadow-strong); transition: transform 0.18s;
-}
-.plan.plan-ghost.over { transform: translate(-50%, -50%) rotate(0deg) scale(0.32); opacity: 0.9; }
 body.plan-dragging { cursor: grabbing; }
 body.plan-dragging .plan { cursor: grabbing; }
 
@@ -369,7 +366,10 @@ body.home #archiveBox { display: flex; }
   #hint { display: none; }
   select { max-width: 120px; min-width: 0; }
   body.home #home { padding: 12px 14px 150px; }
-  #planGrid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 26px 18px; padding: 8px 4px; }
+  /* a plain grid on the phone: the saved spots are for a wide screen */
+  #planGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 26px 18px; margin: 8px 4px; min-height: 0 !important; }
+  .plan { position: relative; left: auto !important; top: auto !important; width: auto; cursor: pointer; }
+  .home-empty { grid-column: 1 / -1; }
   .plan-body { padding: 8px 10px 10px; }
   .plan-title { font-size: 13px; }
   body.home #toast { bottom: 140px; }   /* above the archive box */
