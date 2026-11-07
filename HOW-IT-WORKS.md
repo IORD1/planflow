@@ -26,6 +26,35 @@ Rules that follow from this:
 - Links can never form a loop (A waits for B waits for A). The app refuses before it
   even asks the server, and the server checks again.
 
+## The home page
+
+The app opens on the home page: every plan (board) as a card in a grid, most recently
+edited first. A card's thumbnail is a colour or gradient picked from the plan's id (so it
+never changes) with the plan's flow sketched on it: a box where each task card sits
+(taller if the card has a cover), the links between them as the same curves the canvas
+draws, done tasks filled in white, blocked ones dashed. Every card leans 3 to 10 degrees,
+clockwise or anticlockwise, again from the id, and straightens when the pointer is on it.
+`done / total` sits in the corner and a thin green bar under the title shows progress.
+
+The cardboard box bottom left is the archive. Drag a card onto it (with a mouse or pen:
+the card shrinks into the box as the flaps open) and the plan leaves the grid; a toast
+offers `Undo`. On a phone a finger scrolls the grid, so use the card's ⋯ button or a long
+press for the menu (`Open`, `Rename`, `Archive`, `Delete plan`). Clicking the box lists
+the archived plans with `Restore` and a two-click `Delete`. An archived plan is not in
+the board switcher and nothing else changes about it: its tasks and links stay as they
+were, and `archived_at` on the board row is all the server records.
+
+Where you are is in the URL: `#/` is the home page and `#/board/<id>` a plan, so the
+browser's back button, bookmarks and the PWA's start page all behave.
+
+## Day and dark mode
+
+The ☀ / ☾ button in the top bar switches themes; the choice is kept in this browser
+(`localStorage` key `planflow.theme`). Until you press it the app follows the system
+setting and changes with it. All colours are tokens at the top of `style.css`; the
+light set is the `:root[data-theme="light"]` block. A tiny script in `index.html`
+sets `data-theme` before the stylesheet loads so the page never flashes the other theme.
+
 ## Using the canvas
 
 | What you want | How |

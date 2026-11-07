@@ -103,3 +103,26 @@ r = await call('GET', `/api/boards/${board.id}`); assert.equal(r.data.deps.lengt
 
 await call('DELETE', `/api/boards/${board.id}`);
 console.log('API TESTS PASSED');
+
+// --- archive (PATCH {archived}) and the home page's overview
+{
+  const b2 = (await call('POST', '/api/boards', { name: 'archive-test' })).data;
+  assert.equal(b2.archived_at, null);
+  const t1 = (await call('POST', `/api/boards/${b2.id}/tasks`, { title: 'one', x: 0, y: 0 })).data;
+  const t2 = (await call('POST', `/api/boards/${b2.id}/tasks`, { title: 'two', x: 300, y: 0 })).data;
+  await call('POST', `/api/boards/${b2.id}/deps`, { from: t1.id, to: t2.id });
+  let o = (await call('GET', '/api/overview')).data.boards.find((x) => x.id === b2.id);
+  assert.equal(o.total, 2); assert.equal(o.tasks.length, 2); assert.deepEqual(o.deps, [{ from: t1.id, to: t2.id, from_side: 'right', to_side: 'left' }]);
+  assert.equal(o.tasks[0].cover, false); assert.ok(o.updated_at); console.log('ok overview lists tasks, links, counts');
+  r = await call('PATCH', `/api/boards/${b2.id}`, { archived: 'yes' }); assert.equal(r.status, 400); console.log('ok archived must be boolean');
+  r = await call('PATCH', `/api/boards/${b2.id}`, { archived: true }); assert.equal(r.status, 200); assert.ok(r.data.archived_at); assert.equal(r.data.total, 2); console.log('ok archive sets archived_at');
+  const stamp = r.data.archived_at;
+  r = await call('PATCH', `/api/boards/${b2.id}`, { archived: true }); assert.equal(r.data.archived_at, stamp); console.log('ok archiving again keeps the date');
+  assert.ok((await call('GET', '/api/boards')).data.find((x) => x.id === b2.id).archived_at); console.log('ok GET boards shows archived_at');
+  r = await call('PATCH', `/api/boards/${b2.id}`, { name: 'archive-test-2', archived: false }); assert.equal(r.data.archived_at, null); assert.equal(r.data.name, 'archive-test-2'); console.log('ok unarchive + rename in one PATCH');
+  await call('DELETE', `/api/tasks/${t2.id}`);
+  o = (await call('GET', '/api/overview')).data.boards.find((x) => x.id === b2.id);
+  assert.equal(o.tasks.length, 1); assert.equal(o.deps.length, 0); console.log('ok overview hides trashed tasks and their links');
+  await call('DELETE', `/api/boards/${b2.id}`);
+  assert.equal((await call('GET', '/api/overview')).data.boards.some((x) => x.id === b2.id), false); console.log('ok deleted board gone from overview');
+}

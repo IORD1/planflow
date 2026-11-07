@@ -16,7 +16,8 @@ const SCHEMA = `
   CREATE TABLE IF NOT EXISTS boards (
     id         INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
     name       TEXT NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    archived_at TIMESTAMPTZ           -- set when the plan is dropped into the archive box on the home page
   );
   CREATE TABLE IF NOT EXISTS tasks (
     id         INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
@@ -63,6 +64,8 @@ const SCHEMA = `
   ALTER TABLE deps ADD COLUMN IF NOT EXISTS to_side   TEXT NOT NULL DEFAULT 'left'  CHECK (to_side   IN ('left','right','top','bottom'));
   -- Databases created before undoable deletes existed (2026-09-06) get the trash column.
   ALTER TABLE tasks ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
+  -- Databases created before the home page's archive box existed (2026-11-07).
+  ALTER TABLE boards ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ;
   CREATE INDEX IF NOT EXISTS idx_tasks_board ON tasks(board_id);
   CREATE INDEX IF NOT EXISTS idx_deps_board  ON deps(board_id);
   CREATE INDEX IF NOT EXISTS idx_deps_to     ON deps(to_id);

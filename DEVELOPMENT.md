@@ -16,10 +16,11 @@ Project layout:
 ```
 server.js            HTTP server, API, queries and seed
 db.js                Postgres connection pool, schema (CREATE TABLE IF NOT EXISTS), helpers
-scripts/             api-test.mjs, ui-test.mjs, ui-test-cards.mjs (run against a local server), migrate-sqlite.js (one-off import)
+scripts/             api-test.mjs, ui-test.mjs, ui-test-cards.mjs, ui-test-home.mjs (run against a local server), migrate-sqlite.js (one-off import)
 public/index.html    page skeleton, top bar, SVG arrow markers
 public/app.js        all frontend logic
-public/style.css     all styling (colour tokens at the top in :root; the 760 px phone rules and the
+public/style.css     all styling (colour tokens at the top in :root, the day-mode set under
+                     :root[data-theme="light"]; the home page section; the 760 px phone rules and the
                      coarse-pointer rules at the end)
 public/manifest.webmanifest, public/sw.js, public/icons/   the PWA: installable on the phone (README "On the phone")
 Dockerfile           node:24-alpine, npm ci, copies server.js + db.js + public/
@@ -64,6 +65,14 @@ There is no build step and no cache, the server sends files fresh each time.
 - Paste and drop live under the "covers" heading: `addCover()` decides which task gets
   it, `setImageCover()` shrinks and uploads, `setLinkCover()` asks the server for the
   preview.
+- The home page is the "home page" section near the end of `app.js`: `renderHome()`
+  fetches `/api/overview` and builds a `planCard()` per board; `planLook()` turns the id
+  into the thumbnail colour and the tilt (change the `3 + … * 7` there for another tilt
+  range); `miniFlow()` draws the thumbnail SVG. Dragging a card onto the box is the
+  `planGrid` pointer handlers (`liftPlan`, `moveGhost`, `endPlanDrag`); `archiveBoard()`
+  does the PATCH and pushes the undo. Navigation is the hash (`route()`, `goHome()`,
+  `goBoard()`); `showHome()` / `leaveHome()` swap `body.home`. Colours for both themes
+  are the tokens at the top of `style.css`; `applyTheme()` in `app.js` flips them.
 
 **Server or schema changes**: edit `server.js` (routes and queries) or `db.js` (schema).
 
@@ -115,12 +124,15 @@ delete it again, so run them **only against a local server on a throwaway databa
 PLANFLOW_URL=http://localhost:8093 node scripts/api-test.mjs        # links, sides, cycles, trash/restore, covers
 PLANFLOW_URL=http://localhost:8093 node scripts/ui-test.mjs         # headless Chrome: dragging link handles
 PLANFLOW_URL=http://localhost:8093 node scripts/ui-test-cards.mjs   # headless Chrome: middle-click + type, two-click delete, undo, paste
+PLANFLOW_URL=http://localhost:8093 node scripts/ui-test-home.mjs    # headless Chrome: home page cards, drag into the archive box, restore, day mode
 ```
+
+The UI tests use the browser's `WebSocket`; on Node 20 run them with `node --experimental-websocket`.
 
 The UI tests need Google Chrome at `/usr/bin/google-chrome` (or set `CHROME=`). They drive
 the real page with synthetic mouse and key events, check what the server stored and what
-the DOM shows, and leave screenshots (`sides.png`, `cards.png`) in `$SCRATCH` (default:
-the temp dir). The cards test fakes a paste with a synthetic `ClipboardEvent`, since
+the DOM shows, and leave screenshots (`sides.png`, `cards.png`, `home-dark.png`,
+`home-light.png`, `board-light.png`, `home-phone.png`) in `$SCRATCH` (default: the temp dir). The cards test fakes a paste with a synthetic `ClipboardEvent`, since
 headless Chrome has no clipboard, and pastes a link to the local server itself to test
 the preview fetch without touching the internet.
 

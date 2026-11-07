@@ -14,6 +14,7 @@ async function call(method, path, body) {
 }
 // --- board fixture: four cards in a 2x2 grid
 const board = (await call('POST', '/api/boards', { name: 'ui-sides ' + Date.now() })).data;
+const BOARD_URL = BASE + '/#/board/' + board.id;
 const mk = async (title, x, y) => (await call('POST', `/api/boards/${board.id}/tasks`, { title, x, y })).data;
 const A = await mk('A top-left', 100, 100), B = await mk('B top-right', 520, 100), C = await mk('C bottom-left', 100, 420), D = await mk('D bottom-right', 520, 420);
 // --- chrome
@@ -81,10 +82,11 @@ function assertEnds(d, a, b, label) {
   assert.ok(near(+m[3], b.x) && near(+m[4], b.y), `${label}: ends at ${m[3]},${m[4]} expected ${b.x},${b.y}`);
 }
 try {
-  await send('Page.navigate', { url: BASE + '/' });
-  await waitFor(() => ev(`document.readyState === 'complete' && !!document.querySelector('#boardSelect option')`), 'first load');
-  await ev(`localStorage.setItem('planflow.board', ${board.id}); localStorage.removeItem('planflow.view.${board.id}')`);
-  await send('Page.navigate', { url: BASE + '/' }); await loaded(); await sleep(300);
+  // The app lands on the home page; the board is at #/board/<id>. Forget any saved view of it first.
+  await send('Page.navigate', { url: BASE + '/#/' });
+  await waitFor(() => ev(`document.readyState === 'complete' && document.body.classList.contains('home')`), 'first load');
+  await ev(`localStorage.removeItem('planflow.view.${board.id}')`);
+  await send('Page.navigate', { url: BOARD_URL }); await loaded(); await sleep(300);
   assert.equal(await ev(`document.querySelectorAll('.node[data-id="${A.id}"] .port').length`), 4, 'each card has four ports');
   console.log('ok board open, 4 ports per card');
 
@@ -151,7 +153,7 @@ try {
   console.log('ok side pickers in the panel update the link');
 
   // 6. reload: sides survive
-  await send('Page.navigate', { url: BASE + '/' }); await loaded(); await sleep(300);
+  await send('Page.navigate', { url: BOARD_URL }); await send('Page.reload'); await loaded(); await sleep(300);
   await waitEnds(A.id, C.id, await worldAnchor(A.id, 'bottom'), await worldAnchor(C.id, 'top'), 'A->C after reload');
   await waitEnds(C.id, D.id, await worldAnchor(C.id, 'top'), await worldAnchor(D.id, 'bottom'), 'C->D after reload');
   assert.equal(await ev(`document.querySelectorAll('#edges path.edge').length`), 4, 'four links drawn');

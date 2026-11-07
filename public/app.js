@@ -4,6 +4,7 @@
   const viewport = $('#viewport'), world = $('#world'), edgeLayer = $('#edgeLayer'), nodesLayer = $('#nodes');
   const panel = $('#panel'), toastEl = $('#toast'), boardSelect = $('#boardSelect'), edgeUnlink = $('#edgeUnlink');
   const boardMenu = $('#boardMenu'), zoomLabel = $('#zoomLabel');
+  const home = $('#home'), planGrid = $('#planGrid'), archiveBox = $('#archiveBox'), archiveDrawer = $('#archiveDrawer');
   const NODE_W = 210, MIN_S = 0.2, MAX_S = 3, DRAG_THRESHOLD = 4;
   const MOBILE_FIT_S = 0.6;   // the smallest scale Fit goes to on a phone (fitView)
   const IMAGE_MAX_PX = 1280;     // pasted images are shrunk to this on their long side before upload
@@ -24,7 +25,28 @@
     else if (isMobile()) panel.classList.toggle('open', !!state.selected);
   }
 
+  // ---------------------------------------------------------------- theme (day / dark)
+  // index.html already set data-theme before the first paint (the saved choice, else the system's);
+  // the ☀/☾ button in the top bar flips it and remembers it in this browser.
+  function applyTheme(t) {
+    document.documentElement.dataset.theme = t;
+    const b = $('#btnTheme');
+    if (b) { b.textContent = t === 'dark' ? '☀' : '☾'; b.title = t === 'dark' ? 'Day mode' : 'Dark mode'; }
+    const meta = $('meta[name=theme-color]'); if (meta) meta.content = t === 'dark' ? '#0b0d10' : '#f7f9fb';
+  }
+  applyTheme(document.documentElement.dataset.theme === 'light' ? 'light' : 'dark');
+  $('#btnTheme').addEventListener('click', () => {
+    const t = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+    try { localStorage.setItem('planflow.theme', t); } catch {}
+    applyTheme(t);
+  });
+  matchMedia('(prefers-color-scheme: light)').addEventListener('change', (e) => {   // follow the system until a choice is made
+    try { if (localStorage.getItem('planflow.theme')) return; } catch {}
+    applyTheme(e.matches ? 'light' : 'dark');
+  });
+
   const state = {
+    home: false,                          // the home page (all plans) is showing instead of a board
     boards: [], boardId: null, board: null,
     tasks: new Map(), deps: [],           // deps: [{from, to, from_side, to_side}]  "from must be done before to"
     selected: null,                       // {type:'task', id} | {type:'edge', from, to}
@@ -983,7 +1005,7 @@
     ctxMenu.replaceChildren(...items.map((it) => {
       if (it === '-') return h('div', { class: 'sep' });
       const btn = h('button', { class: it.danger ? 'danger' : '', disabled: !!it.disabled, title: it.title }, it.label);
-      btn.addEventListener('click', () => { if (it.arm) { armedDelete(it.arm, btn); return; } hideCtx(); it.run(); });
+      btn.addEventListener('click', () => { if (it.arm) { armedDelete(it.arm, btn, it.run || deleteTask); return; } hideCtx(); it.run(); });
       return btn;
     }));
     ctxMenu.hidden = false;
@@ -1046,6 +1068,11 @@
     if (inField) { if (e.key === 'Escape') e.target.blur(); return; }
     if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && (e.key === 'z' || e.key === 'Z')) { e.preventDefault(); undoLast(); return; }
     if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if (state.home) {
+      if (e.key === 'Escape') { closeDrawer(); hideCtx(); disarm(); }
+      else if (e.key === 'n' || e.key === 'N') { e.preventDefault(); newBoard(); }
+      return;
+    }
     if (pendingCreate) {                    // a card is on its way: what is typed now becomes its title
       if (e.key.length === 1) { typeAhead += e.key; e.preventDefault(); }
       return;
@@ -1061,14 +1088,28 @@
   });
 
   // ---------------------------------------------------------------- boards
+  const boardOf = (id) => state.boards.find((b) => b.id === id) || null;
+  // Archived boards live in the home page's archive box, not in the switcher (unless one is open).
   function renderBoards() {
-    boardSelect.replaceChildren(...state.boards.map((b) => h('option', { value: b.id, selected: b.id === state.boardId }, b.name)));
+    boardSelect.replaceChildren(...state.boards.filter((b) => !b.archived_at || b.id === state.boardId)
+      .map((b) => h('option', { value: b.id, selected: b.id === state.boardId }, b.name)));
   }
   async function loadBoards() { state.boards = await api('GET', '/api/boards'); renderBoards(); }
+  // Where you are is in the hash: #/ is the home page, #/board/<id> a board. Changing it is how
+  // the app navigates (goHome / goBoard), so the back button and bookmarks work.
+  function route() {
+    const m = location.hash.match(/^#\/board\/(\d+)$/);
+    if (m) openBoard(+m[1]).catch((e) => { toast(e.message); goHome(); });
+    else showHome();
+  }
+  function goHome() { if (location.hash === '#/' || location.hash === '') { showHome(); } else location.hash = '#/'; }
+  function goBoard(id) { const hh = '#/board/' + id; if (location.hash === hh) route(); else location.hash = hh; }
   async function openBoard(id, keepView = false) {
     flushSave();
     const data = await api('GET', `/api/boards/${id}`);
     if (state.boardId !== id) { undoStack.length = 0; disarm(); }
+    leaveHome();
+    document.title = data.board.name + ' · Planflow';
     state.boardId = id; state.board = data.board;
     state.tasks = new Map(data.tasks.map((t) => [t.id, t]));
     state.deps = data.deps;
@@ -1082,24 +1123,45 @@
     if (v && typeof v.s === 'number') { state.view = v; applyView(); } else fitView(false);
   }
   async function newBoard() {
-    const name = prompt('Board name', 'New project'); if (!name || !name.trim()) return;
-    try { const b = await api('POST', '/api/boards', { name: name.trim() }); await loadBoards(); await openBoard(b.id); } catch (e) { toast(e.message); }
+    const name = prompt('Plan name', 'New project'); if (!name || !name.trim()) return;
+    try { const b = await api('POST', '/api/boards', { name: name.trim() }); await loadBoards(); goBoard(b.id); } catch (e) { toast(e.message); }
   }
-  async function renameBoard() {
-    const name = prompt('Rename board', state.board.name); if (!name || !name.trim() || name.trim() === state.board.name) return;
-    try { await api('PATCH', `/api/boards/${state.boardId}`, { name: name.trim() }); await loadBoards(); state.board.name = name.trim(); renderPanel(); } catch (e) { toast(e.message); }
-  }
-  // Second click on the board menu's Delete (see armedDelete). Unlike a task, a board is gone for good.
-  async function deleteBoard() {
-    disarm(); boardMenu.hidden = true;
+  async function renameBoard(id = state.boardId) {
+    const b = boardOf(id); if (!b) return;
+    const name = prompt('Rename plan', b.name); if (!name || !name.trim() || name.trim() === b.name) return;
     try {
-      await api('DELETE', `/api/boards/${state.boardId}`);
-      await loadBoards();
-      if (!state.boards.length) { const b = await api('POST', '/api/boards', { name: 'My project' }); await loadBoards(); await openBoard(b.id); }
-      else await openBoard(state.boards[0].id);
+      await api('PATCH', `/api/boards/${id}`, { name: name.trim() }); await loadBoards();
+      if (state.board && state.board.id === id) { state.board.name = name.trim(); document.title = name.trim() + ' · Planflow'; renderPanel(); }
+      if (state.home) await renderHome();
     } catch (e) { toast(e.message); }
   }
-  boardSelect.addEventListener('change', () => openBoard(+boardSelect.value).catch((e) => toast(e.message)));
+  // A board is deleted for good (unlike a task). From the board menu it is the open board and
+  // the second click on Delete board (see armedDelete) lands here; the home page calls deletePlan.
+  async function deleteBoard() {
+    disarm(); boardMenu.hidden = true;
+    try { await deletePlan(state.boardId); goHome(); } catch (e) { toast(e.message); }
+  }
+  async function deletePlan(id) {
+    const b = boardOf(id);
+    disarm(); hideCtx();
+    await api('DELETE', `/api/boards/${id}`);
+    if (state.boardId === id) { state.boardId = null; state.board = null; }
+    await loadBoards();
+    if (state.home) await renderHome();
+    toast(`Deleted "${b ? b.name : 'plan'}"`);
+  }
+  // Into the archive box (on = true) or back out of it. Archiving is undoable from the toast / Ctrl+Z.
+  async function archiveBoard(id, on = true) {
+    const b = boardOf(id);
+    try {
+      await api('PATCH', `/api/boards/${id}`, { archived: on });
+      await loadBoards();
+      if (state.home) await renderHome();
+      if (on) pushUndo({ label: `Archived "${b ? b.name : 'plan'}"`, run: () => archiveBoard(id, false) });
+      else toast(`"${b ? b.name : 'Plan'}" is back.`);
+    } catch (e) { toast(e.message); }
+  }
+  boardSelect.addEventListener('change', () => goBoard(+boardSelect.value));
   const boardArmId = () => 'board:' + state.boardId;
   function closeBoardMenu() { boardMenu.hidden = true; if (isArmed(boardArmId())) disarm(); }
   $('#btnBoardMenu').addEventListener('click', (e) => {
@@ -1119,11 +1181,17 @@
     }
     closeBoardMenu();
     if (act === 'new') newBoard(); else if (act === 'rename') renameBoard();
+    else if (act === 'archive') archiveBoard(state.boardId).then(goHome);
   });
-  document.addEventListener('click', (e) => { if (!e.target.closest('#boardMenu, #btnBoardMenu')) closeBoardMenu(); if (!e.target.closest('.menu.ctx')) hideCtx(); });
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('#boardMenu, #btnBoardMenu')) closeBoardMenu();
+    if (!e.target.closest('.menu.ctx')) hideCtx();
+    if (!e.target.closest('#archiveDrawer, #archiveBox')) closeDrawer();
+  });
   window.addEventListener('resize', hideCtx);
 
   $('#btnAdd').addEventListener('click', addAtCenter);
+  $('#btnNewBoard').addEventListener('click', newBoard);
   $('#btnArrange').addEventListener('click', arrange);
   $('#btnFit').addEventListener('click', () => fitView(true));
   $('#btnList').addEventListener('click', () => setListMode(!listMode));
@@ -1135,20 +1203,191 @@
 
   // Re-sync when the tab comes back (e.g. edited from the phone meanwhile).
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible' && state.boardId && !gesture && !editing) {
-      loadBoards().then(() => openBoard(state.boardId, true)).catch(() => {});
-    }
+    if (document.visibilityState !== 'visible') return;
+    if (state.home) { renderHome().catch(() => {}); return; }
+    if (state.boardId && !gesture && !editing) loadBoards().then(() => openBoard(state.boardId, true)).catch(() => {});
   });
   window.addEventListener('beforeunload', flushSave);
 
+  // ---------------------------------------------------------------- home page
+  // All plans as cards, YouTube style: a coloured thumbnail with the plan's flow sketched on it,
+  // each card leaning a little, most recently edited first. Drag a card onto the cardboard box
+  // (bottom left) to archive it; click the box for the archived ones (restore / delete).
+  function showHome() {
+    flushSave(); endEdit(); disarm(); hideCtx(); closeBoardMenu();
+    state.home = true; document.body.classList.add('home');
+    document.title = 'Planflow';
+    renderHome().catch((e) => toast('Could not load: ' + e.message));
+  }
+  function leaveHome() {
+    if (!state.home) return;
+    state.home = false; document.body.classList.remove('home');
+    closeDrawer(); hideCtx(); endPlanDrag({ type: 'pointercancel', pointerId: planDrag && planDrag.pid });
+  }
+  function closeDrawer() { archiveDrawer.hidden = true; }
+  // The same plan always gets the same colours and tilt: a hash of its id, not Math.random(),
+  // so the home page does not reshuffle on every visit. Different plans look nothing alike.
+  function rnd(seed, salt) {
+    let x = (Math.imul(seed, 374761393) + Math.imul(salt, 668265263)) | 0;
+    x = Math.imul(x ^ (x >>> 13), 1274126177); x ^= x >>> 16;
+    return (x >>> 0) / 4294967296;
+  }
+  function planLook(id) {
+    const h1 = Math.floor(rnd(id, 1) * 360), h2 = (h1 + 30 + Math.floor(rnd(id, 2) * 70)) % 360;
+    const bg = rnd(id, 3) < 0.25 ? `hsl(${h1} 62% 48%)`    // one plan in four is a flat colour
+      : `linear-gradient(${Math.floor(rnd(id, 4) * 360)}deg, hsl(${h1} 72% 54%), hsl(${h2} 72% 40%))`;
+    const tilt = (3 + rnd(id, 5) * 7) * (rnd(id, 6) < 0.5 ? -1 : 1);   // 3..10°, clockwise or not
+    return { bg, tilt: Math.round(tilt * 10) / 10 };
+  }
+  // The flow drawn small: boxes where the cards are (a cover makes one taller), links between
+  // them with the real curve, done boxes filled in. Stroke widths are scaled to the thumbnail.
+  const MINI_H = 52, MINI_COVER_H = 90, MINI_W_PX = 300, MINI_H_PX = 170;
+  function miniFlow(b) {
+    const tasks = b.tasks, byId = new Map(tasks.map((t) => [t.id, t]));
+    const hOf = (t) => MINI_H + (t.cover ? MINI_COVER_H : 0);
+    const svg = svgEl('svg', { class: 'mini', viewBox: '0 0 160 90', preserveAspectRatio: 'xMidYMid meet' });
+    if (!tasks.length) return svg;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const t of tasks) { minX = Math.min(minX, t.x); minY = Math.min(minY, t.y); maxX = Math.max(maxX, t.x + NODE_W); maxY = Math.max(maxY, t.y + hOf(t)); }
+    const pad = 24, vw = maxX - minX + pad * 2, vh = maxY - minY + pad * 2;
+    svg.setAttribute('viewBox', `${minX - pad} ${minY - pad} ${vw} ${vh}`);
+    const k = Math.min(MINI_W_PX / vw, MINI_H_PX / vh), sw = 2.2 / k, ah = 9 / k;   // ≈ 2px lines at the size shown
+    const mid = 'ma' + b.id;
+    svg.append(svgEl('defs', {}));
+    const marker = svgEl('marker', { id: mid, markerUnits: 'userSpaceOnUse', markerWidth: ah, markerHeight: ah, refX: ah * 0.85, refY: ah / 2, orient: 'auto' });
+    marker.append(svgEl('path', { d: `M0,0 L${ah},${ah / 2} L0,${ah} z`, class: 'ma' }));
+    svg.firstChild.append(marker);
+    const box = (t, side) => {   // like anchor(), with the thumbnail's heights
+      const hh = hOf(t), dir = DIR[side] || DIR.right;
+      const p = side === 'left' ? { x: t.x, y: t.y + hh / 2 } : side === 'top' ? { x: t.x + NODE_W / 2, y: t.y }
+        : side === 'bottom' ? { x: t.x + NODE_W / 2, y: t.y + hh } : { x: t.x + NODE_W, y: t.y + hh / 2 };
+      return { ...p, dir };
+    };
+    const blocked = new Set(b.deps.filter((d) => byId.get(d.from) && byId.get(d.from).status !== 'done').map((d) => d.to));
+    for (const d of b.deps) {
+      const a = byId.get(d.from), c = byId.get(d.to); if (!a || !c) continue;
+      svg.append(svgEl('path', { d: pathD(box(a, d.from_side || 'right'), box(c, d.to_side || 'left')), class: 'ml' + (a.status === 'done' ? ' done' : ''),
+        'stroke-width': sw, 'marker-end': `url(#${mid})` }));
+    }
+    for (const t of tasks) {
+      const st = t.status === 'done' ? 'done' : blocked.has(t.id) ? 'blocked' : 'ready';
+      const r = svgEl('rect', { x: t.x, y: t.y, width: NODE_W, height: hOf(t), rx: 5 / k, class: 'mn ' + st, 'stroke-width': sw });
+      if (st === 'blocked') r.setAttribute('stroke-dasharray', `${6 / k} ${4 / k}`);
+      svg.append(r);
+    }
+    return svg;
+  }
+  function relTime(iso) {
+    if (!iso) return '';
+    const m = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
+    if (m < 2) return 'just now';
+    if (m < 60) return `${m} min ago`;
+    const hh = Math.round(m / 60); if (hh < 24) return `${hh} h ago`;
+    const d = Math.round(hh / 24); if (d < 7) return d === 1 ? 'yesterday' : `${d} days ago`;
+    if (d < 60) return `${Math.round(d / 7)} wk ago`;
+    return new Date(iso).toLocaleDateString(undefined, { dateStyle: 'medium' });
+  }
+  function planCard(b) {
+    const { bg, tilt } = planLook(b.id);
+    const ready = b.tasks.filter((t) => t.status !== 'done' && !b.deps.some((d) => d.to === t.id && b.tasks.some((f) => f.id === d.from && f.status !== 'done'))).length;
+    const meta = b.total ? `${b.total} task${b.total === 1 ? '' : 's'} · ${ready} ready · edited ${relTime(b.updated_at || b.created_at)}` : `empty · made ${relTime(b.created_at)}`;
+    return h('article', { class: 'plan', 'data-id': b.id, style: `--tilt:${tilt}deg`, tabindex: 0, role: 'link', 'aria-label': 'Open ' + b.name },
+      h('div', { class: 'thumb', style: 'background:' + bg }, miniFlow(b),
+        b.total ? h('span', { class: 'thumb-count' }, `${b.done} / ${b.total}`) : h('span', { class: 'thumb-empty' }, 'Empty plan')),
+      h('div', { class: 'plan-body' }, h('div', { class: 'plan-title' }, b.name), h('div', { class: 'plan-meta' }, meta),
+        h('div', { class: 'plan-bar' }, h('div', { class: 'fill', style: `width:${b.total ? b.done / b.total * 100 : 0}%` }))),
+      h('button', { class: 'icon plan-menu', title: 'Plan options', 'aria-label': 'Plan options',
+        onclick: (e) => { e.stopPropagation(); planMenu(b, e.clientX, e.clientY); } }, '⋯'));
+  }
+  async function renderHome() {
+    const { boards } = await api('GET', '/api/overview');
+    state.boards = boards.map(({ tasks, deps, ...b }) => b); renderBoards();   // the switcher stays in step with the cards
+    const when = (b) => b.updated_at || b.created_at || '';
+    const live = boards.filter((b) => !b.archived_at).sort((a, b) => when(b).localeCompare(when(a)));
+    const archived = boards.filter((b) => b.archived_at).sort((a, b) => b.archived_at.localeCompare(a.archived_at));
+    $('#homeCount').textContent = `${live.length} plan${live.length === 1 ? '' : 's'}` + (archived.length ? ` · ${archived.length} archived` : '');
+    planGrid.replaceChildren(...(live.length ? live.map(planCard)
+      : [h('div', { class: 'home-empty' }, h('div', {}, archived.length ? 'Every plan is in the archive box.' : 'No plans yet. A plan is a board of tasks that wait for each other.'),
+          h('button', { class: 'primary', onclick: newBoard }, '+ New plan'))]));
+    const cnt = $('.archive-count', archiveBox); cnt.textContent = archived.length; cnt.hidden = !archived.length;
+    archiveDrawer.replaceChildren(h('h4', {}, `Archived (${archived.length})`),
+      archived.length ? h('ul', {}, archived.map((b) => h('li', {},
+          h('span', { class: 't' }, b.name, h('span', { class: 'small muted' }, ` · ${b.total} task${b.total === 1 ? '' : 's'}`)),
+          h('button', { onclick: () => archiveBoard(b.id, false) }, 'Restore'),
+          h('button', { class: 'danger', 'data-label': 'Delete', title: 'Click twice. Gone for good.',
+            onclick: (e) => armedDelete('board:' + b.id, e.currentTarget, () => deletePlan(b.id).catch((err) => toast(err.message))) }, 'Delete'))))
+        : h('div', { class: 'empty' }, 'Nothing here. Drag a plan onto the box to archive it.'));
+  }
+  function planMenu(b, x, y) {
+    if (!b) return;
+    showCtx([
+      { label: 'Open', run: () => goBoard(b.id) },
+      { label: 'Rename', run: () => renameBoard(b.id) },
+      b.archived_at ? { label: 'Take out of the archive', run: () => archiveBoard(b.id, false) } : { label: 'Archive', run: () => archiveBoard(b.id) },
+      '-',
+      { label: 'Delete plan', danger: true, arm: 'board:' + b.id, title: 'Click twice. Cannot be undone.', run: () => deletePlan(b.id).catch((e) => toast(e.message)) },
+    ], x, y);
+  }
+  // Mouse / pen: drag a card (a copy follows the pointer) onto the box to archive it; a plain
+  // click opens the plan. A finger scrolls the grid as usual, so on touch the card's ⋯ menu
+  // (or a long press) has Archive instead.
+  let planDrag = null;   // { id, el, pid, sx, sy, touch, timer, ghost, over }
+  planGrid.addEventListener('pointerdown', (e) => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    const el = e.target.closest('.plan'); if (!el || e.target.closest('.plan-menu')) return;
+    hideCtx(); closeDrawer();
+    planDrag = { id: +el.dataset.id, el, pid: e.pointerId, sx: e.clientX, sy: e.clientY, touch: e.pointerType === 'touch', ghost: null, over: false };
+    if (planDrag.touch) planDrag.timer = setTimeout(() => { const d = planDrag; if (d && !d.ghost) { planDrag = null; planMenu(boardOf(d.id), d.sx, d.sy); } }, 550);
+  });
+  function liftPlan(d) {
+    const r = d.el.getBoundingClientRect();
+    const ghost = d.el.cloneNode(true);
+    ghost.className = 'plan plan-ghost'; ghost.removeAttribute('tabindex');
+    ghost.style.setProperty('--w', r.width + 'px'); ghost.style.setProperty('--tilt', d.el.style.getPropertyValue('--tilt'));
+    ghost.querySelector('.plan-menu')?.remove();
+    document.body.append(ghost);
+    d.ghost = ghost; d.el.classList.add('ghosted'); document.body.classList.add('plan-dragging');
+  }
+  function moveGhost(d, x, y) {
+    d.ghost.style.left = x + 'px'; d.ghost.style.top = y + 'px';
+    const under = document.elementFromPoint(x, y);
+    const over = !!(under && under.closest('#archiveBox'));
+    if (over !== d.over) { d.over = over; archiveBox.classList.toggle('hot', over); d.ghost.classList.toggle('over', over); }
+  }
+  planGrid.addEventListener('pointermove', (e) => {
+    const d = planDrag; if (!d || e.pointerId !== d.pid) return;
+    if (!d.ghost) {
+      if (Math.hypot(e.clientX - d.sx, e.clientY - d.sy) < DRAG_THRESHOLD) return;
+      if (d.touch) { clearTimeout(d.timer); planDrag = null; return; }   // a moving finger is scrolling
+      try { planGrid.setPointerCapture(e.pointerId); } catch {}
+      liftPlan(d);
+    }
+    moveGhost(d, e.clientX, e.clientY);
+  });
+  function endPlanDrag(e) {
+    const d = planDrag; if (!d || e.pointerId !== d.pid) return;
+    planDrag = null; clearTimeout(d.timer);
+    if (!d.ghost) { if (e.type === 'pointerup') goBoard(d.id); return; }
+    archiveBox.classList.remove('hot'); d.el.classList.remove('ghosted'); document.body.classList.remove('plan-dragging'); d.ghost.remove();
+    if (e.type === 'pointerup' && d.over) archiveBoard(d.id);
+  }
+  planGrid.addEventListener('pointerup', endPlanDrag);
+  planGrid.addEventListener('pointercancel', endPlanDrag);
+  planGrid.addEventListener('keydown', (e) => {
+    const el = e.target.closest('.plan'); if (!el || e.target !== el) return;
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); goBoard(+el.dataset.id); }
+  });
+  planGrid.addEventListener('contextmenu', (e) => {
+    const el = e.target.closest('.plan'); if (!el) return;
+    e.preventDefault(); planDrag = null;
+    planMenu(boardOf(+el.dataset.id), e.clientX, e.clientY);
+  });
+  archiveBox.addEventListener('click', () => { archiveDrawer.hidden = !archiveDrawer.hidden; });
+
   // ---------------------------------------------------------------- boot
   (async () => {
-    try {
-      await loadBoards();
-      if (!state.boards.length) { const b = await api('POST', '/api/boards', { name: 'My project' }); await loadBoards(); await openBoard(b.id); return; }
-      const saved = store.get('planflow.board');
-      const id = state.boards.some((b) => b.id === saved) ? saved : state.boards[0].id;
-      await openBoard(id);
-    } catch (e) { toast('Could not load: ' + e.message); console.error(e); }
+    try { await loadBoards(); } catch (e) { toast('Could not load: ' + e.message); console.error(e); }
+    window.addEventListener('hashchange', route);
+    route();   // the hash says where to start: a board, or (the usual case) the home page
   })();
 })();

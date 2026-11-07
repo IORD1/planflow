@@ -20,9 +20,10 @@ const UA = 'Mozilla/5.0 (compatible; Planflow/1.0; +https://github.com/IORD1/pla
 const { all, one, run, tx } = db;
 
 const BOARD_SUMMARY = `
-  SELECT b.id, b.name, b.created_at,
+  SELECT b.id, b.name, b.created_at, b.archived_at,
          (SELECT COUNT(*)::int FROM tasks t WHERE t.board_id = b.id AND t.deleted_at IS NULL) AS total,
-         (SELECT COUNT(*)::int FROM tasks t WHERE t.board_id = b.id AND t.deleted_at IS NULL AND t.status = 'done') AS done
+         (SELECT COUNT(*)::int FROM tasks t WHERE t.board_id = b.id AND t.deleted_at IS NULL AND t.status = 'done') AS done,
+         (SELECT MAX(t.updated_at) FROM tasks t WHERE t.board_id = b.id AND t.deleted_at IS NULL) AS updated_at
   FROM boards b`;
 
 // A task row plus its cover's metadata (never the picture bytes: those have their own route).
@@ -40,6 +41,17 @@ const q = {
   insertBoard: async (name) => (await one('INSERT INTO boards (name) VALUES ($1) RETURNING id', [name])).id,
   renameBoard: (name, id) => run('UPDATE boards SET name = $1 WHERE id = $2', [name, id]),
   deleteBoard: (id) => run('DELETE FROM boards WHERE id = $1', [id]),
+  // Archive = hide from the board list and park the card in the home page's archive box; unarchive clears it.
+  setBoardArchived: (on, id) => run(
+    'UPDATE boards SET archived_at = CASE WHEN $1 THEN COALESCE(archived_at, now()) ELSE NULL END WHERE id = $2', [on, id]),
+  // For the thumbnails on the home page: every live task's spot and state, and every live link, all boards at once.
+  overviewTasks: () => all(`
+    SELECT t.id, t.board_id, t.x, t.y, t.status, (c.task_id IS NOT NULL) AS cover
+    FROM tasks t LEFT JOIN covers c ON c.task_id = t.id WHERE t.deleted_at IS NULL ORDER BY t.id`),
+  overviewDeps: () => all(`
+    SELECT d.board_id, d.from_id AS "from", d.to_id AS "to", d.from_side, d.to_side
+    FROM deps d JOIN tasks a ON a.id = d.from_id JOIN tasks b ON b.id = d.to_id
+    WHERE a.deleted_at IS NULL AND b.deleted_at IS NULL`),
   tasksOfBoard: (boardId) => all(`${TASK_SELECT} WHERE t.board_id = $1 AND t.deleted_at IS NULL ORDER BY t.id`, [boardId]),
   // Links between two live tasks only: a deleted task's links wait in the trash with it.
   depsOfBoard: (boardId) => all(`
@@ -342,10 +354,25 @@ route('GET', '/api/boards/:id', async ({ params }) => {
   return { board, tasks: tasks.map(taskOut), deps };
 });
 
+// {name} renames, {archived: true|false} moves the board into or out of the home page's archive.
 route('PATCH', '/api/boards/:id', async ({ params, body }) => {
   const board = (await q.board(params.id)) || notFound('board');
   if (body.name !== undefined) await q.renameBoard(cleanTitle(body.name), board.id);
-  return q.board(board.id);
+  if (body.archived !== undefined) {
+    if (typeof body.archived !== 'boolean') bad('archived must be true or false');
+    await q.setBoardArchived(body.archived, board.id);
+  }
+  return q.boardSummary(board.id);
+});
+
+// The home page in one request: every board (archived ones too, with archived_at set) with its
+// counts and a sketch of its flow (task spots, states, covers, links) for the card's thumbnail.
+route('GET', '/api/overview', async () => {
+  const [boards, tasks, deps] = await Promise.all([q.boards(), q.overviewTasks(), q.overviewDeps()]);
+  const by = new Map(boards.map((b) => [b.id, { ...b, tasks: [], deps: [] }]));
+  for (const t of tasks) by.get(t.board_id)?.tasks.push({ id: t.id, x: t.x, y: t.y, status: t.status, cover: t.cover });
+  for (const d of deps) by.get(d.board_id)?.deps.push({ from: d.from, to: d.to, from_side: d.from_side, to_side: d.to_side });
+  return { boards: [...by.values()] };
 });
 
 route('DELETE', '/api/boards/:id', async ({ params }) => {

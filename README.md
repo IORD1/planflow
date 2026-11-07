@@ -7,6 +7,11 @@ up **Ready** when everything it waits for is done, and the side panel always lis
 you can start right now. Paste an image or a link and it becomes the card's cover,
 Trello-style. Deleting takes two clicks and can be undone.
 
+The home page shows every plan as a card, YouTube style: a coloured thumbnail with the
+plan's flow sketched on it, each card leaning a little. Drag a card onto the cardboard
+box in the bottom-left corner to archive it; click the box to get archived plans back.
+The ☀ / ☾ button in the top bar switches between day and dark mode.
+
 Node's built-in HTTP server, PostgreSQL through the `pg` driver (the only dependency), vanilla JS frontend.
 
 - **[HOW-IT-WORKS.md](HOW-IT-WORKS.md)**: using the board, the ready/blocked/done rules, and what the code does.
@@ -36,6 +41,11 @@ dumps every database to the HDD every six hours. See [DEVELOPMENT.md](DEVELOPMEN
 
 | Action | How |
 | --- | --- |
+| Open a plan | click its card on the home page (the Planflow logo always goes back home). A plan's address is `#/board/<id>`, so bookmarks and the back button work |
+| New plan | `+ New plan` on the home page, or `N` there |
+| Archive a plan | drag its card onto the box bottom left, or `Archive` in the card's ⋯ menu (long-press on a phone) or the board menu. The toast's `Undo` or `Ctrl+Z` brings it back |
+| Archived plans | click the box: a list with `Restore` and `Delete` (two clicks) |
+| Day / dark mode | the ☀ / ☾ button in the top bar. Follows the system until you choose |
 | Add a task | `+ Task`, press `N`, double-click or middle-click empty canvas, or right-click → `Add task here`. Then just type: the caret is already in the new card's title |
 | Rename a task | double-click it (or select it and press `Enter`), type, `Enter`. Or edit in the side panel |
 | Give a task a cover | select it and paste an image or a link (`Ctrl+V`), or drop one on its card. With nothing selected, the paste makes a new card. Links get their title and picture fetched |

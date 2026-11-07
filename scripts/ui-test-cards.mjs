@@ -15,6 +15,7 @@ async function call(method, path, body) {
 }
 // --- board fixture: two cards
 const board = (await call('POST', '/api/boards', { name: 'ui-cards ' + Date.now() })).data;
+const BOARD_URL = BASE + '/#/board/' + board.id;
 const mk = async (title, x, y) => (await call('POST', `/api/boards/${board.id}/tasks`, { title, x, y })).data;
 const A = await mk('A first', 100, 100), B = await mk('B second', 520, 100);
 await call('POST', `/api/boards/${board.id}/deps`, { from: A.id, to: B.id });
@@ -56,10 +57,11 @@ const loaded = (n) => waitFor(() => ev(`document.querySelectorAll('.node').lengt
 const rect = (id) => ev(`(() => { const r = document.querySelector('.node[data-id="${id}"]').getBoundingClientRect(); return { l: r.left, t: r.top, r: r.right, b: r.bottom, cx: (r.left + r.right) / 2, cy: (r.top + r.bottom) / 2 }; })()`);
 const active = () => ev(`(() => { const a = document.activeElement; return a ? { tag: a.tagName, cls: a.className, editable: a.isContentEditable, node: a.closest('.node')?.dataset.id || null, text: a.textContent } : null; })()`);
 try {
-  await send('Page.navigate', { url: BASE + '/' });
-  await waitFor(() => ev(`document.readyState === 'complete' && !!document.querySelector('#boardSelect option')`), 'first load');
-  await ev(`localStorage.setItem('planflow.board', ${board.id}); localStorage.removeItem('planflow.view.${board.id}')`);
-  await send('Page.navigate', { url: BASE + '/' }); await loaded(2); await sleep(300);
+  // The app lands on the home page; the board is at #/board/<id>. Forget any saved view of it first.
+  await send('Page.navigate', { url: BASE + '/#/' });
+  await waitFor(() => ev(`document.readyState === 'complete' && document.body.classList.contains('home')`), 'first load');
+  await ev(`localStorage.removeItem('planflow.view.${board.id}')`);
+  await send('Page.navigate', { url: BOARD_URL }); await loaded(2); await sleep(300);
 
   // 1. middle-click on empty canvas: a card appears and the caret is in its title; typing names it
   {
