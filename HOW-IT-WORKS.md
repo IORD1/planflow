@@ -153,8 +153,9 @@ sets `data-theme` before the stylesheet loads so the page never flashes the othe
 | Delete a task | press `Delete` in the panel or the right-click menu: it turns into a red **Really?**; press it again. Or select the task and hit the `Delete` key twice. See [Deleting and undo](#deleting-and-undo) |
 | Undo a delete | `Ctrl+Z`, or the `Undo` button in the toast that appears |
 | Add the next step | right-click a task and choose `Add next step`. A new task appears to its right, already linked, ready to be named |
+| Add the next card without the mouse | press `Enter` when a card's name is typed: twelve arrows appear around it. `F` / `J` turn the chosen one, `Enter` adds a linked card that way. See [The next card](#the-next-card-enter-f-j-enter) |
 | Tidy the layout | `Arrange` or `A`. Columns by dependency depth; links that skip a column get their own lane. Arrows keep the sides you chose |
-| See everything | `Fit` or `F` |
+| See everything | `Fit` or `F` (while the twelve arrows show, `F` turns them instead) |
 | Zoom | scroll wheel, or pinch on a phone |
 | Pan | drag empty canvas, or drag with the middle button |
 | Deselect | click empty canvas or press `Esc` |
@@ -170,10 +171,48 @@ side, each with an arrow going down into the same database box.
 
 Every way of adding a task ends the same: the card is selected and its title is being
 edited **on the card itself**, with the placeholder `New task` selected so that typing
-replaces it. `Enter` or clicking elsewhere keeps what you typed; an empty title becomes
-`Untitled`. Keys pressed in the short moment before the server has answered are not lost:
+replaces it. `Enter` or clicking elsewhere keeps what you typed (`Enter` also brings up the
+arrows for the next card, see below); an empty title becomes `Untitled`. Keys pressed in the short moment before the server has answered are not lost:
 they are kept and become the start of the title. On a phone the panel's title field is
 focused instead, because the bottom sheet would cover the card.
+
+### The next card: Enter, F, J, Enter
+
+A board is mostly built by adding a card to the one just typed. That takes no mouse:
+
+1. Type a card's name and press `Enter` (in the card itself or in the panel's name field).
+   Twelve small arrows appear around the card, one per hour of a clock face. One is chosen:
+   it is filled blue, a dashed outline shows where the new card would land, and a dashed
+   link runs to it.
+2. `J` turns the chosen arrow on by an hour (clockwise), `F` turns it back. They are the
+   keys under the two index fingers, and the arrows either side of the chosen one wear
+   those letters, so the keys never have to be remembered. The arrow keys point it straight
+   up, right, down or left.
+3. `Enter` adds the card there, linked from the first one, with the caret in its name.
+   Type, `Enter`, and the arrows are around the new card.
+
+So a chain is `type, Enter, Enter, type, Enter, Enter…`: the board remembers the hour you
+last used, and a new board starts at 3 o'clock, to the right, which is how Arrange lays a
+chain out and how most links on the existing boards run.
+
+Where the card lands: cards in a row share their top edge and cards in a column their left
+edge, 90 px apart (Arrange's column gap), so a chain made this way is straight. If a card
+is already there, the new one goes under it (to the right of it for the hours that point
+up or down); going the same way from the same card twice makes a list, not a pile. The
+view pans by itself when the outline would be off the screen. The link leaves the side of
+the card the hour points at (11 to 1 the top, 2 to 4 the right, 5 to 7 the bottom, 8 to 10
+the left) and enters the new card on the opposite side.
+
+Getting out: `Esc`, a click anywhere else, typing in another field, or any other key puts
+the arrows away (the other key then does what it always does: `N`, `A`, `Delete`…). The one
+clash is `F`, which fits the view when no arrows are showing. If the second `Enter` was a
+slip, press `Esc` in the new card before typing anything: the card is taken back and the
+arrows return. A click on an arrow, or on the outline, adds the card with the mouse.
+
+What the link means is the board's mode, as always: the new task waits for the first, the
+new idea goes with it, the new point is a part of it, the new step comes after it. On a
+phone there are no arrows (no `F` and `J` to turn them): the panel's `+ Next step` adds a
+linked card there.
 
 ### Deleting and undo
 
@@ -397,6 +436,18 @@ Vanilla JavaScript, one file, no build step. The important pieces:
   trims it and saves. Keys pressed while a task is still being created are collected in
   `typeAhead` and become the title. Pointer-downs inside the editable title are left to
   the browser so the caret can be placed.
+- **The next card** (the twelve arrows): `openCompass(id)` runs when `Enter` ends a name.
+  The state is `compass = {id, hour, size, slot}`; `#compass` (inside `#world`, so it pans
+  and zooms with the board) holds twelve `button.arm` and the `.ghost` outline.
+  `slotFor()` works out where the card for an hour lands and slides it past cards that
+  are in the way; `freshSize()` measures what a new card will be by building one, linked,
+  for a moment. `placeArms()` puts the arrows on an oval around the card and scales them
+  by `--k` so they keep their size on screen when zoomed out. The document's key handler
+  hands keys to `compassKey()` first while the arrows show. `compassGo()` calls
+  `createTask(x, y, {after, fromSide, toSide})`; `born` remembers the card it made until
+  something is typed, which is what `Esc` takes back (`takeBack()`, a normal soft delete).
+  `reveal()` pans the view just far enough to show a rectangle. The hour is kept in
+  `localStorage` as `planflow.next.<board id>`.
 - **Two-click delete**: `armedDelete()` remembers one armed task id for four seconds; the
   panel button, the right-click item and the `Delete` key all go through it, so any of
   them can be the second click.

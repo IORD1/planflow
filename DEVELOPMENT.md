@@ -16,7 +16,7 @@ Project layout:
 ```
 server.js            HTTP server, API, queries and seed
 db.js                Postgres connection pool, schema (CREATE TABLE IF NOT EXISTS), helpers
-scripts/             api-test.mjs, ui-test.mjs, ui-test-cards.mjs, ui-test-home.mjs, ui-test-modes.mjs (run against a local server), migrate-sqlite.js (one-off import)
+scripts/             api-test.mjs, ui-test.mjs, ui-test-cards.mjs, ui-test-home.mjs, ui-test-modes.mjs, ui-test-next.mjs (run against a local server), migrate-sqlite.js (one-off import)
 public/index.html    page skeleton, top bar, SVG arrow markers
 public/app.js        all frontend logic
 public/style.css     all styling (colour tokens at the top in :root, the day-mode set under
@@ -126,7 +126,7 @@ curl -s $B/api/boards
 curl -s -X POST $B/api/boards/1/tasks -H 'Content-Type: application/json' -d '{"title":"Try it","x":100,"y":100}'
 ```
 
-There are five proper test scripts in `scripts/`. Each creates its boards, exercises them, and
+There are six proper test scripts in `scripts/`. Each creates its boards, exercises them, and
 deletes them again, so run them **only against a local server on a throwaway database**
 (see "Running locally" above), never against the live app. A throwaway database does not
 need the shared server: `docker run -d --rm --name planflow-test-pg -e POSTGRES_USER=planflow_dev
@@ -140,6 +140,7 @@ PLANFLOW_URL=http://localhost:8093 node scripts/ui-test.mjs         # headless C
 PLANFLOW_URL=http://localhost:8093 node scripts/ui-test-cards.mjs   # headless Chrome: middle-click + type, two-click delete, undo, paste
 PLANFLOW_URL=http://localhost:8093 node scripts/ui-test-home.mjs    # headless Chrome: home page cards, drag into the archive box, restore, day mode
 PLANFLOW_URL=http://localhost:8093 node scripts/ui-test-modes.mjs   # headless Chrome: the four modes, switching and undo, loops, words on arrows, decisions, outline
+PLANFLOW_URL=http://localhost:8093 node scripts/ui-test-next.mjs    # headless Chrome: Enter after a name, the twelve arrows, F / J, the linked next card
 ```
 
 Use `localhost` in `PLANFLOW_URL`, not `127.0.0.1`: the cards test pastes a link to the

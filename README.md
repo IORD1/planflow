@@ -61,6 +61,7 @@ dumps every database to the HDD every six hours. See [DEVELOPMENT.md](DEVELOPMEN
 | Day / dark mode | the ☀ / ☾ button in the top bar. Follows the system until you choose |
 | Add a task | `+ Task`, press `N`, double-click or middle-click empty canvas, or right-click → `Add task here`. Then just type: the caret is already in the new card's title |
 | Rename a task | double-click it (or select it and press `Enter`), type, `Enter`. Or edit in the side panel |
+| Add the next card from the keyboard | `Enter` after a card's name puts twelve arrows around the card, like the hours of a clock. `F` and `J` turn the chosen one (the arrow keys point it up, right, down, left), `Enter` adds a card that way, linked from this one, with the caret in its name. So a chain is: type, `Enter`, `Enter`, type. `Esc`, a click elsewhere or any other key puts the arrows away |
 | Give a task a cover | select it and paste an image or a link (`Ctrl+V`), or drop one on its card. With nothing selected, the paste makes a new card. Links get their title and picture fetched |
 | Move a task | drag it |
 | Make B wait for A | move the mouse near A and drag any of its blue ● handles onto B; the arrow attaches to the side of B you drop nearest to |
@@ -76,7 +77,7 @@ dumps every database to the HDD every six hours. See [DEVELOPMENT.md](DEVELOPMEN
 | Delete a board | board menu (next to the board name), `Delete board` turns red, click again. Boards are not in the trash: this one is for good |
 | Edit title / notes | click the task, edit in the side panel |
 | Tidy the layout | `Arrange` / `A` — columns by dependency depth. On an ideas board the cards with no links are packed into a block underneath |
-| Zoom / pan | scroll wheel or pinch / drag empty space, `F` fits everything (on a phone it stops at 60%, so cards stay readable) |
+| Zoom / pan | scroll wheel or pinch / drag empty space, `F` fits everything (on a phone it stops at 60%, so cards stay readable). While the twelve arrows show, `F` turns them instead |
 | On a phone | `List` in the top bar shows the board as lists (ready / blocked / done, or the piles, the outline, the steps, by mode); tap a card for its details (mark done, notes, links, cover), `← Back` returns. `Board` goes back to the canvas. Tapping a card on the canvas opens its details as a bottom sheet |
 
 On a tasks board and in an outline, links can never form a loop; the server rejects it and

@@ -5,7 +5,9 @@
   const panel = $('#panel'), toastEl = $('#toast'), boardSelect = $('#boardSelect'), edgeUnlink = $('#edgeUnlink');
   const boardMenu = $('#boardMenu'), zoomLabel = $('#zoomLabel'), edgeLabels = $('#edgeLabels');
   const home = $('#home'), planGrid = $('#planGrid'), archiveBox = $('#archiveBox'), archiveDrawer = $('#archiveDrawer');
+  const compassEl = $('#compass');
   const NODE_W = 210, MIN_S = 0.2, MAX_S = 3, DRAG_THRESHOLD = 4;
+  const NEXT_GAP = 90;           // the space between a card and the next one made from it (Arrange's column gap)
   const MOBILE_FIT_S = 0.6;   // the smallest scale Fit goes to on a phone (fitView)
   const IMAGE_MAX_PX = 1280;     // pasted images are shrunk to this on their long side before upload
   const ARM_MS = 4000;           // how long a delete button stays at "Really?"
@@ -54,6 +56,9 @@
     view: { x: 40, y: 40, s: 1 },
   };
   const nodeEls = new Map();
+  // The arrows around a card that say where the next card goes (see "the next card" below).
+  let compass = null;          // { id, hour, size, slot } while they are showing
+  let born = null;             // { id, from, hour }: the card they just made, until something is typed in it
   const pointers = new Map();
   let gesture = null;
 
@@ -145,8 +150,14 @@
     const add = $('#btnAdd'); add.textContent = def.add; add.title = `Add ${def.a} (N)`;
     $('#btnMode .mode-ico').replaceChildren(modeIcon(id));
     $('#btnMode .mode-name').textContent = def.label;
-    $('#hint').replaceChildren(`Right-click for actions · double-click or middle-click empty space to add ${def.a} and type its name · paste an image or a link to give a card a cover · drag a `,
-      h('b', {}, '●'), ` handle (any side) ${def.drag} · scroll to zoom, drag to pan`);
+    showHint();
+  }
+  // The line at the bottom of the canvas: what the mouse does, or the keys of the arrows while they show.
+  function showHint() {
+    const def = M(), k = (s) => h('b', {}, s);
+    if (compass) $('#hint').replaceChildren(k('F'), ' and ', k('J'), ' turn the arrow, the arrow keys point it · ', k('Enter'), ` adds ${def.a} there, linked to this one, ready to type · `, k('Esc'), ' puts the arrows away');
+    else $('#hint').replaceChildren(`Right-click for actions · double-click or middle-click empty space to add ${def.a} and type its name · press Enter after a name to add the next one from it · paste an image or a link to give a card a cover · drag a `,
+      k('●'), ` handle (any side) ${def.drag} · scroll to zoom, drag to pan`);
   }
 
   // ---------------------------------------------------------------- utils
@@ -284,6 +295,7 @@
     viewport.style.backgroundPosition = `${x}px ${y}px`;
     viewport.style.backgroundSize = `${24 * s}px ${24 * s}px`;
     zoomLabel.textContent = Math.round(s * 100) + '%';
+    if (compass) placeArms();     // the arrows keep their size on screen
     clearTimeout(viewSaveTimer);
     viewSaveTimer = setTimeout(() => state.boardId && store.set('planflow.view.' + state.boardId, state.view), 300);
   }
@@ -331,6 +343,16 @@
       state.view.y = r.height / 2 - (t.y + el.offsetHeight / 2) * s;
       applyView();
     });
+  }
+  // Pan just far enough that a world rectangle is on screen (the place the next card will land).
+  // One that does not fit keeps its top left corner in view.
+  function reveal(box, pad = 56) {
+    const r = viewport.getBoundingClientRect(), { x, y, s } = state.view;
+    const l = box.x * s + x, t = box.y * s + y, rt = l + box.w * s, b = t + box.h * s;
+    const dx = l < pad ? pad - l : rt > r.width - pad ? Math.max(r.width - pad - rt, pad - l) : 0;
+    const dy = t < pad ? pad - t : b > r.height - pad ? Math.max(r.height - pad - b, pad - t) : 0;
+    if (!dx && !dy) return;
+    animateView(() => { state.view.x += dx; state.view.y += dy; applyView(); });
   }
   // A free spot in the middle of the view for a new card.
   function centerSpot() {
@@ -410,7 +432,7 @@
     }
   }
   function renderAll() {
-    endEdit(); graphCache = null;
+    endEdit(); closeCompass(); born = null; graphCache = null;
     nodesLayer.replaceChildren(); nodeEls.clear();
     for (const t of state.tasks.values()) { const el = makeNode(t); nodesLayer.appendChild(el); nodeEls.set(t.id, el); }
     renderEdges(); renderPanel(); renderProgress();
@@ -445,13 +467,14 @@
       return;
     }
     if (editing && editing.id !== id) endEdit();
+    closeCompass();
     const ti = $('.title', el);
     ti.setAttribute('contenteditable', 'plaintext-only');
     if (!ti.isContentEditable) ti.setAttribute('contenteditable', 'true');   // browsers without plaintext-only
     editing = { id, el: ti };
     const typed = opts.fresh ? typeAhead : ''; typeAhead = '';
     if (typed) { ti.textContent = typed; t.title = typed; scheduleSave(id, { title: typed }); syncPanelTitle(t); }
-    ti.focus();
+    ti.focus({ preventScroll: true });   // the canvas pans, it never scrolls (see reveal)
     const range = document.createRange(); range.selectNodeContents(ti);
     if (typed) range.collapse(false);
     const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(range);
@@ -459,6 +482,7 @@
   function endEdit() {
     if (!editing) return;
     const { id, el: ti } = editing; editing = null;
+    if (born && born.id === id) born = null;
     ti.removeAttribute('contenteditable');
     const t = state.tasks.get(id); if (!t) return;
     t.title = (ti.textContent || '').replace(/\s+/g, ' ').trim() || 'Untitled';
@@ -473,14 +497,26 @@
   nodesLayer.addEventListener('input', (e) => {
     if (!editing || e.target !== editing.el) return;
     const t = state.tasks.get(editing.id); if (!t) return;
+    if (born && born.id === t.id) born = null;       // something was typed: Esc no longer takes the card back
     t.title = editing.el.textContent;
     scheduleSave(t.id, { title: t.title.trim() || 'Untitled' });
     syncPanelTitle(t); renderEdges();
   });
   nodesLayer.addEventListener('keydown', (e) => {
     if (!editing || e.target !== editing.el) return;
+    if (e.key !== 'Enter' && e.key !== 'Escape') return;
     // stopPropagation: the document handler must not see this key (Enter would start a new edit)
-    if (e.key === 'Enter' || e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); e.target.blur(); }
+    e.preventDefault(); e.stopPropagation();
+    if (e.key === 'Enter' && e.repeat) return;        // a held Enter must not run off adding cards
+    const { id, el: ti } = editing;
+    if (e.key === 'Escape' && born && born.id === id) {   // Esc in a card the arrows just made, nothing typed: take it back
+      const b = born; born = null; editing = null;
+      ti.removeAttribute('contenteditable'); ti.blur();
+      takeBack(b);
+      return;
+    }
+    ti.blur();
+    if (e.key === 'Enter') openCompass(id);           // the name is done: where does the next card go?
   });
   nodesLayer.addEventListener('focusout', (e) => { if (editing && e.target === editing.el) endEdit(); });
 
@@ -590,6 +626,12 @@
         : { ...gesture.cur, dir: { x: -a.dir.x, y: -a.dir.y } };
       edgeLayer.append(svgEl('path', { d: pathD(a, b), class: 'edge temp', 'marker-end': 'url(#arrow-temp)' }));
     }
+    if (compass && compass.slot && nodeEls.has(compass.id)) {     // the link the chosen arrow would make
+      const s = compass.slot, a = anchor(compass.id, s.side);
+      const b = s.toSide === 'left' ? { x: s.x, y: s.y + s.h / 2 } : s.toSide === 'right' ? { x: s.x + s.w, y: s.y + s.h / 2 }
+        : s.toSide === 'top' ? { x: s.x + s.w / 2, y: s.y } : { x: s.x + s.w / 2, y: s.y + s.h };
+      edgeLayer.append(svgEl('path', { d: pathD(a, { ...b, dir: DIR[s.toSide] }), class: 'edge temp', 'marker-end': 'url(#arrow-temp)' }));
+    }
   }
 
   // ---------------------------------------------------------------- selection + panel
@@ -597,6 +639,7 @@
   function select(sel) {
     flushLabel();
     if (sel && sel.type === 'edge' && !isSel('edge', sel)) edgePickedAt = performance.now();
+    if (compass && !(sel && sel.type === 'task' && sel.id === compass.id)) closeCompass();
     state.selected = sel;
     for (const [id, el] of nodeEls) el.classList.toggle('selected', isSel('task', id));
     renderEdges(); renderPanel();
@@ -662,7 +705,7 @@
       const unlinkBtn = (from, to) => h('button', { class: 'unlink', title: 'Remove link', onclick: (e) => { e.stopPropagation(); deleteDep(from, to); } }, '✕');
       const titleInput = h('input', { type: 'text', class: 'title-input', value: t.title, maxlength: 300, placeholder: def.fresh,
         oninput: (e) => { t.title = e.target.value; updateNode(nodeEls.get(t.id), { ...t, title: t.title || 'Untitled' }); renderEdges(); scheduleSave(t.id, { title: t.title.trim() || 'Untitled' }); },
-        onblur: flushSave, onkeydown: (e) => { if (e.key === 'Enter') { e.target.blur(); } } });
+        onblur: flushSave, onkeydown: (e) => { if (e.key === 'Enter' && !e.repeat) { e.target.blur(); openCompass(t.id); } } });
       const notes = h('textarea', { placeholder: def.notes,
         oninput: (e) => { t.notes = e.target.value; scheduleSave(t.id, { notes: t.notes }); }, onblur: flushSave });
       notes.value = t.notes || '';
@@ -749,6 +792,7 @@
       h('div', { class: 'tips' },
         h('div', {}, h('kbd', {}, 'N'), ` new ${def.one}, then just type its name · `, h('kbd', {}, 'A'), ' arrange · ', h('kbd', {}, 'F'), ' fit view'),
         h('div', {}, h('kbd', {}, 'Del'), ` twice removes the selected ${def.one} (`, h('kbd', {}, 'Ctrl+Z'), ' undoes) · ', h('kbd', {}, 'Enter'), ' rename · ', h('kbd', {}, 'Esc'), ' deselect'),
+        h('div', {}, h('kbd', {}, 'Enter'), ' after a name shows twelve arrows around the card: ', h('kbd', {}, 'F'), ' and ', h('kbd', {}, 'J'), ' turn, ', h('kbd', {}, 'Enter'), ` adds the next ${def.one} there, linked.`),
         h('div', {}, `Right-click a card, a link, or empty space for a menu · middle-click adds ${def.a} under the cursor.`),
         h('div', {}, 'Paste an image or a link (', h('kbd', {}, 'Ctrl+V'), `) to give the selected card a cover, or to make a new ${def.one} when nothing is selected.`),
         h('div', {}, def.rule)));
@@ -927,7 +971,8 @@
   }
 
   // ---------------------------------------------------------------- mutations
-  // opts: after (id to link from), title, notes, focus:false to leave the title alone.
+  // opts: after (id to link from; fromSide / toSide say where that link attaches), title, notes,
+  // focus:false to leave the title alone.
   async function createTask(x, y, opts = {}) {
     pendingCreate++;
     try {
@@ -935,7 +980,7 @@
       state.tasks.set(t.id, t);
       const el = makeNode(t); nodesLayer.appendChild(el); nodeEls.set(t.id, el);
       renderProgress();
-      if (opts.after && state.tasks.has(opts.after)) await addDep(opts.after, t.id, { quiet: true });
+      if (opts.after && state.tasks.has(opts.after)) await addDep(opts.after, t.id, { quiet: true, fromSide: opts.fromSide, toSide: opts.toSide });
       select({ type: 'task', id: t.id });
       if (opts.focus !== false) editTitle(t.id, { fresh: true });
       return t;
@@ -961,6 +1006,7 @@
   }
   function removeTaskLocally(id) {
     if (editing && editing.id === id) editing = null;
+    if (compass && compass.id === id) closeCompass();
     state.tasks.delete(id);
     state.deps = state.deps.filter((d) => d.from !== id && d.to !== id);
     nodeEls.get(id)?.remove(); nodeEls.delete(id);
@@ -1148,7 +1194,7 @@
   // ---------------------------------------------------------------- auto arrange
   async function arrange() {
     const all = [...state.tasks.values()]; if (!all.length) return;
-    graphCache = null;
+    closeCompass(); graphCache = null;
     // On an ideas board the cards with no links are a pile, not a column: they are packed into a
     // block under the linked ones (step 5). Everywhere else every card takes part in the columns.
     const pile = modeId() === 'ideas' ? all.filter((t) => !insOf(t.id).length && !outsOf(t.id).length) : [];
@@ -1254,8 +1300,9 @@
   }
   viewport.addEventListener('pointerdown', (e) => {
     if (e.pointerType === 'mouse' && e.button !== 0 && e.button !== 1) return;
-    if (e.target.closest('.check, #edgeUnlink')) return;         // handled by click
+    if (e.target.closest('.check, #edgeUnlink, #compass')) return;   // handled by click
     if (e.target.isContentEditable) return;                      // typing a title on the card: let the browser place the caret
+    closeCompass();                                              // a click anywhere else puts the arrows away
     pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     try { viewport.setPointerCapture(e.pointerId); } catch {}
     if (pointers.size === 2 && e.pointerType === 'touch') { startPinch(); return; }
@@ -1384,7 +1431,8 @@
     const under = document.elementFromPoint(e.clientX, e.clientY);
     const hit = under && under.closest('.edge-hit');
     if (hit) { select({ type: 'edge', from: +hit.dataset.from, to: +hit.dataset.to }); focusLabel(); return; }   // double-click a link: write on it
-    if (!under || under.closest('#edgeUnlink, .check, .port') || under.isContentEditable) return;
+    if (!under || under.closest('#edgeUnlink, .check, .port, #compass') || under.isContentEditable) return;
+    if (performance.now() - compassClickAt < 600) return;        // the second click of a double-click on an arrow: it is gone by now
     const nodeEl = under.closest('.node');
     if (nodeEl) { editTitle(+nodeEl.dataset.id); return; }   // double-click a card: rename it there
     const w = clientToWorld(e.clientX, e.clientY);
@@ -1519,10 +1567,157 @@
   viewport.addEventListener('mousedown', (e) => { if (e.button === 1) e.preventDefault(); });
   viewport.addEventListener('auxclick', (e) => e.preventDefault());
 
+  // ---------------------------------------------------------------- the next card
+  // Enter after a card's name puts twelve arrows around the card, one per hour of a clock face.
+  // F turns the chosen one back an hour and J on an hour (the keys under the two index fingers;
+  // the arrows either side of the chosen one wear those letters), the arrow keys point it straight
+  // up, right, down or left. Enter then adds a card that way, linked from this one, with the caret
+  // in its name, so a chain is: type, Enter, Enter, type. The dashed outline shows where the card
+  // will land. The hour is remembered per board. Esc, a click elsewhere or any other key puts the
+  // arrows away; Esc in the new card before anything is typed takes that card back.
+  const HOURS = 12;
+  const OPPOSITE = { top: 'bottom', bottom: 'top', left: 'right', right: 'left' };
+  const hourVec = (hr) => ({ x: Math.sin(hr * Math.PI / 6), y: -Math.cos(hr * Math.PI / 6) });
+  // The side of the card a link to that hour leaves from: 11-1 the top, 2-4 the right, and so on.
+  const hourSide = (hr) => (hr >= 11 || hr <= 1 ? 'top' : hr <= 4 ? 'right' : hr <= 7 ? 'bottom' : 'left');
+  // A shaft and a head: a bare triangle turned by 30 or 60 degrees looks as if it points the other way.
+  const ARROW = 'M1.5,6 H10 M6.2,2.3 L10,6 L6.2,9.7';
+  const arms = Array.from({ length: HOURS }, (_, hr) => {
+    const svg = svgEl('svg', { viewBox: '0 0 12 12', 'aria-hidden': 'true', style: `transform: rotate(${hr * 30 - 90}deg)` });
+    svg.append(svgEl('path', { d: ARROW }));
+    return h('button', { class: 'arm', 'data-hour': hr, tabindex: '-1' }, svg);
+  });
+  const ghostName = h('span', {});
+  const ghost = h('button', { class: 'ghost', tabindex: '-1' }, h('kbd', {}, 'Enter'), ghostName);
+  compassEl.append(ghost, ...arms);
+  let compassClickAt = 0;   // when an arrow was last clicked (see the canvas's dblclick)
+
+  // How big a new card linked from `from` will be: one is built, measured and thrown away. It is
+  // in the board's data for that moment, so that it gets the look it will have (blocked, a level
+  // of the outline, the end of a flow).
+  function freshSize(from) {
+    const t = { id: 0, title: M().fresh, notes: '', status: 'todo', x: 0, y: 0, cover: null };
+    state.tasks.set(0, t); state.deps.push({ from, to: 0 }); graphCache = null;
+    const el = makeNode(t); el.style.visibility = 'hidden'; nodesLayer.appendChild(el);
+    const size = { w: el.offsetWidth, h: el.offsetHeight };
+    el.remove(); state.tasks.delete(0); state.deps.pop(); graphCache = null;
+    return size;
+  }
+  // Where the card for that hour lands: { x, y, w, h, side, toSide }. Cards in a row share their
+  // top edge, cards in a column their left one, NEXT_GAP apart (what Arrange leaves between
+  // columns), so a chain made this way is straight. If a card is already there the new one goes
+  // under it (to the right of it for the hours that point up or down): going the same way from
+  // the same card twice stacks the cards as a list instead of piling them up.
+  function slotFor(id, hour, size) {
+    const t = state.tasks.get(id), hh = nodeEls.get(id).offsetHeight, u = hourVec(hour);
+    // Tall enough that the cards one hour off straight up or down still clear this one.
+    const gap = (tall) => Math.max(NEXT_GAP, (28 + 0.134 * tall) / 0.866);
+    const box = { x: Math.round(t.x + u.x * (NODE_W + NEXT_GAP)),
+      y: Math.round(t.y + u.y * (u.y > 0 ? hh + gap(hh) : size.h + gap(size.h))), w: size.w, h: size.h };
+    const side = hourSide(hour), row = side === 'left' || side === 'right', pad = 10;
+    for (let i = 0; i < 300; i++) {
+      let hit = null;
+      for (const [oid, oel] of nodeEls) {
+        const o = state.tasks.get(oid);
+        if (box.x < o.x + oel.offsetWidth + pad && box.x + box.w > o.x - pad && box.y < o.y + oel.offsetHeight + pad && box.y + box.h > o.y - pad) { hit = { o, oel }; break; }
+      }
+      if (!hit) break;
+      if (row) box.y = hit.o.y + hit.oel.offsetHeight + 28; else box.x = hit.o.x + hit.oel.offsetWidth + 36;
+    }
+    return { ...box, side, toSide: OPPOSITE[side] };
+  }
+  // The arrows sit on an oval around the card. They are drawn on the board, so they would shrink
+  // with it: --k scales them back up, and the oval grows with them.
+  function placeArms() {
+    const c = compass, t = state.tasks.get(c.id), el = nodeEls.get(c.id); if (!t || !el) return;
+    const w = el.offsetWidth, hh = el.offsetHeight, k = clamp(1 / state.view.s, 1, 3.4);
+    const rx = w / 2 + 46 * k, ry = hh / 2 + Math.max(36, (24 + 0.067 * hh) / 0.866) * k;
+    compassEl.style.setProperty('--k', k);
+    arms.forEach((arm, hr) => {
+      const u = hourVec(hr), turn = (hr - c.hour + HOURS) % HOURS;
+      arm.style.left = (t.x + w / 2 + u.x * rx) + 'px'; arm.style.top = (t.y + hh / 2 + u.y * ry) + 'px';
+      arm.className = 'arm' + (turn === 0 ? ' on' : turn === 1 || turn === HOURS - 1 ? ' key' : '');
+      arm.dataset.key = turn === 1 ? 'J' : turn === HOURS - 1 ? 'F' : '';
+      arm.title = turn === 0 ? `Add ${M().a} this way (Enter)` : `Add ${M().a} this way`;
+    });
+  }
+  function layoutCompass() {
+    const c = compass; if (!c) return;
+    if (!state.tasks.has(c.id) || !nodeEls.has(c.id)) { closeCompass(); return; }
+    c.slot = slotFor(c.id, c.hour, c.size);
+    ghost.style.left = c.slot.x + 'px'; ghost.style.top = c.slot.y + 'px'; ghost.style.height = c.slot.h + 'px';
+    placeArms(); renderEdges();
+  }
+  function openCompass(id, hour) {
+    const el = nodeEls.get(id), t = state.tasks.get(id);
+    if (!t || !el || isMobile() || state.home) return;       // on a phone the panel's "+ Next step" does this
+    if (!isSel('task', id)) select({ type: 'task', id });
+    const saved = store.get('planflow.next.' + state.boardId);
+    compass = { id, hour: hour ?? (Number.isInteger(saved) && saved >= 0 && saved < HOURS ? saved : 3), size: freshSize(id), slot: null };
+    ghostName.textContent = M().fresh;
+    compassEl.hidden = false;
+    showHint(); layoutCompass();
+    reveal({ x: t.x, y: t.y, w: el.offsetWidth, h: el.offsetHeight }, 70); reveal(compass.slot);
+  }
+  function closeCompass() {
+    if (!compass) return;
+    compass = null; compassEl.hidden = true;
+    showHint(); renderEdges();
+  }
+  function pointCompass(hour) {
+    compass.hour = ((hour % HOURS) + HOURS) % HOURS;
+    layoutCompass(); reveal(compass.slot);
+  }
+  async function compassGo(hour) {
+    const c = compass; if (!c) return;
+    hour = hour ?? c.hour;
+    const slot = hour === c.hour ? c.slot : slotFor(c.id, hour, c.size);
+    closeCompass();
+    store.set('planflow.next.' + state.boardId, hour);
+    reveal(slot);
+    const t = await createTask(slot.x, slot.y, { after: c.id, fromSide: slot.side, toSide: slot.toSide });
+    // Until something is typed in it, Esc takes this card back and shows the arrows again.
+    if (t && editing && editing.id === t.id && t.title === M().fresh) born = { id: t.id, from: c.id, hour };
+  }
+  async function takeBack(b) {
+    if (pendingSave && pendingSave.id === b.id) { clearTimeout(saveTimer); pendingSave = null; }
+    try { await api('DELETE', `/api/tasks/${b.id}`); } catch (e) { toast(e.message); return; }
+    removeTaskLocally(b.id);
+    if (!state.tasks.has(b.from)) return;
+    select({ type: 'task', id: b.from }); openCompass(b.from, b.hour);
+  }
+  // true when the key was one of the arrows' own.
+  function compassKey(e) {
+    if (e.ctrlKey || e.metaKey || e.altKey) return false;
+    switch (e.key) {
+      case 'j': case 'J': pointCompass(compass.hour + 1); return true;
+      case 'f': case 'F': pointCompass(compass.hour - 1); return true;
+      case 'ArrowUp': pointCompass(0); return true;
+      case 'ArrowRight': pointCompass(3); return true;
+      case 'ArrowDown': pointCompass(6); return true;
+      case 'ArrowLeft': pointCompass(9); return true;
+      case 'Enter': if (!e.repeat) compassGo(); return true;
+      case 'Escape': closeCompass(); return true;
+    }
+    return false;
+  }
+  compassEl.addEventListener('click', (e) => {
+    const arm = e.target.closest('.arm');
+    if (!arm && !e.target.closest('.ghost')) return;
+    compassClickAt = performance.now();
+    compassGo(arm ? +arm.dataset.hour : undefined);
+  });
+  // Typing somewhere else (the notes, the words on a link) puts the arrows away too.
+  document.addEventListener('focusin', (e) => { if (compass && (e.target.matches('input, textarea, select') || e.target.isContentEditable)) closeCompass(); });
+
   // ---------------------------------------------------------------- keyboard
   document.addEventListener('keydown', (e) => {
     const inField = e.target.matches('input, textarea, select') || e.target.isContentEditable;
     if (inField) { if (e.key === 'Escape') e.target.blur(); return; }
+    if (compass) {                          // the arrows around a card are showing (see "the next card")
+      if (compassKey(e)) { e.preventDefault(); return; }
+      if (!['Shift', 'Control', 'Alt', 'Meta', 'CapsLock'].includes(e.key)) closeCompass();   // any other key puts them away, then does what it always did
+    }
     if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && (e.key === 'z' || e.key === 'Z')) { e.preventDefault(); undoLast(); return; }
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     if (state.home) {
@@ -1670,7 +1865,7 @@
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState !== 'visible') return;
     if (state.home) { renderHome().catch(() => {}); return; }
-    if (state.boardId && !gesture && !editing) loadBoards().then(() => openBoard(state.boardId, true)).catch(() => {});
+    if (state.boardId && !gesture && !editing && !compass) loadBoards().then(() => openBoard(state.boardId, true)).catch(() => {});
   });
   window.addEventListener('beforeunload', () => { flushSave(); flushLabel(); });
 
@@ -1679,7 +1874,7 @@
   // each card leaning a little, most recently edited first. Drag a card onto the cardboard box
   // (bottom left) to archive it; click the box for the archived ones (restore / delete).
   function showHome() {
-    flushSave(); endEdit(); disarm(); hideCtx(); closeBoardMenu();
+    flushSave(); endEdit(); closeCompass(); disarm(); hideCtx(); closeBoardMenu();
     state.home = true; document.body.classList.add('home');
     document.title = 'Planflow';
     renderHome().catch((e) => toast('Could not load: ' + e.message));
