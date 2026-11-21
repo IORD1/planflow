@@ -19,7 +19,10 @@ const SCHEMA = `
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     archived_at TIMESTAMPTZ,          -- set when the plan is dropped into the archive box on the home page
     home_x     DOUBLE PRECISION,      -- where the card was last dropped on the home page; NULL = not moved yet,
-    home_y     DOUBLE PRECISION       -- the page puts it in the next free spot
+    home_y     DOUBLE PRECISION,      -- the page puts it in the next free spot
+    -- What the board is for, which decides what a card and a link mean on it (server.js MODES):
+    -- tasks = to-dos that wait for each other, ideas = a pile of ideas, plan = an outline, flow = a workflow.
+    mode       TEXT NOT NULL DEFAULT 'tasks' CHECK (mode IN ('tasks','ideas','plan','flow'))
   );
   CREATE TABLE IF NOT EXISTS tasks (
     id         INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
@@ -58,6 +61,7 @@ const SCHEMA = `
     -- which edge of each card the arrow is attached to
     from_side TEXT NOT NULL DEFAULT 'right' CHECK (from_side IN ('left','right','top','bottom')),
     to_side   TEXT NOT NULL DEFAULT 'left'  CHECK (to_side   IN ('left','right','top','bottom')),
+    label     TEXT,                   -- words written on the arrow ("Yes", "No", "retry"); NULL = none
     PRIMARY KEY (from_id, to_id),
     CHECK (from_id <> to_id)
   );
@@ -70,6 +74,10 @@ const SCHEMA = `
   ALTER TABLE boards ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ;
   ALTER TABLE boards ADD COLUMN IF NOT EXISTS home_x DOUBLE PRECISION;
   ALTER TABLE boards ADD COLUMN IF NOT EXISTS home_y DOUBLE PRECISION;
+  -- Databases created before boards had modes and links had labels (2026-11-21). Every existing
+  -- board stays a tasks board, so nothing changes until its mode is switched.
+  ALTER TABLE boards ADD COLUMN IF NOT EXISTS mode TEXT NOT NULL DEFAULT 'tasks' CHECK (mode IN ('tasks','ideas','plan','flow'));
+  ALTER TABLE deps ADD COLUMN IF NOT EXISTS label TEXT;
   CREATE INDEX IF NOT EXISTS idx_tasks_board ON tasks(board_id);
   CREATE INDEX IF NOT EXISTS idx_deps_board  ON deps(board_id);
   CREATE INDEX IF NOT EXISTS idx_deps_to     ON deps(to_id);

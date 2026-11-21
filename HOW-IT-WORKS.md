@@ -1,14 +1,18 @@
 # How Planflow works
 
-Planflow is a todo list drawn as a flow chart. Every task is a box on a canvas.
-A link between two boxes means **"the second task waits for the first"**. A task
-can only be started once everything it waits for is done, so the board always tells
-you what you can work on right now.
+Planflow is cards on a canvas with links between them. What a board is for, its
+**mode**, decides what a card and a link mean there: things to do in order, a pile of
+ideas, an outline, or a workflow (see "Modes" below). It started as a todo list drawn as
+a flow chart, and that is still the mode a board has unless you choose another: every
+task is a box, a link between two boxes means **"the second task waits for the first"**,
+and a task can only be started once everything it waits for is done, so the board always
+tells you what you can work on right now.
 
 ## The three states
 
-Every task is in exactly one of these states. Nothing is stored for this; it is
-worked out from the links and the done flags each time the board renders.
+This section is about a **tasks** board. Every task is in exactly one of these states.
+Nothing is stored for this; it is worked out from the links and the done flags each time
+the board renders.
 
 | State | Looks like | Meaning |
 | --- | --- | --- |
@@ -26,6 +30,69 @@ Rules that follow from this:
 - Links can never form a loop (A waits for B waits for A). The app refuses before it
   even asks the server, and the server checks again.
 
+## Modes
+
+A board is one of four things. The cards, the links and everything stored about them are
+the same in all four; the mode only changes how they are read, so a board can be switched
+back and forth and nothing is lost (a checkbox that a mode hides is still ticked when you
+come back).
+
+| | Tasks | Ideas | Planning | Workflow |
+| --- | --- | --- | --- | --- |
+| A card is | a task | an idea, a link, a picture | a heading or a point | a step or a decision |
+| A link A → B | B waits for A | A and B go together | B is a part of A | after A comes B |
+| Drawn as | an arrow, green once A is done | a dotted thread, no head | a branch ending in a bud | an arrow |
+| Checkbox | yes, and it can be blocked | a quiet tick, never blocked | none | none |
+| Loops | refused | allowed | refused | allowed (a retry) |
+| The panel lists | ready, blocked, done | the piles, then the loose ideas | the cards as an outline | the flow, step by step |
+| Top bar says | `+ Task`, `3 / 7 done` | `+ Idea`, `20 ideas` | `+ Point`, `24 points` | `+ Step`, `48 steps` |
+
+**Choosing.** `+ New plan` asks what the plan is for before it asks for a name. On a
+board, the button next to the board's name shows the mode and opens the same list; on a
+phone it is `What it is for…` in the `⋯` menu, and the line under the board's name in the
+list. A switch shows a toast with `Undo` (`Ctrl+Z` works too).
+
+**Ideas.** For collecting: films to watch, things to buy, pages that caught your eye.
+Cards lean a little, each by its own fixed amount, like the plan cards on the home page;
+the selected one sits straight. Nothing is ever blocked. A card with links going out is a
+**pile** (heavier border, `7 in this pile`) and the panel lists each pile with what is in
+it, then the ideas on their own, newest first; a row with a link cover has a ↗ that opens
+the page. The tick in a card's corner appears when the pointer is on the card or the card
+is selected, and stays once ticked: watched, bought, used. Ticked ideas sink to the end of
+their list. `Arrange` lays the linked cards out in columns and packs the unlinked ones
+into a block underneath, shortest column first, so pictures of different heights fit.
+
+**Planning.** For breaking a thing down. A card's level comes from its links: a card that
+nothing points to and that points to others is the top of an outline (a block of ink,
+large type), the cards it points to are sections (a heavy left edge), anything deeper is
+a point (a light left edge), and a card with no links is a loose point (dashed). A card
+with cards under it says how many. The panel shows the outline indented, in the order the
+cards are laid out (top to bottom when siblings are stacked, left to right when they are
+side by side), and `Copy as text` puts it on the clipboard as a Markdown list, link
+covers included.
+
+**Workflow.** For how something runs. A card's part is read off its title and its links:
+
+- a **start** (a green pill with ▶) is a card that nothing leads to;
+- an **end** (a pill with ■) is a card that leads nowhere;
+- a **decision** (six sides, orange) is a card that asks something, meaning its title
+  ends in `?` or begins with `Is`, `Are`, `Does`, `Did`, `Should` or `If`, or a card
+  whose arrows out carry words. A card that simply feeds two others is a plain step.
+
+Arrows can carry **words** (40 characters at most): double-click an arrow and type, or
+select it and use `Written on it` in the panel, where `Yes`, `No` and `None` are one
+click each (also in the arrow's right-click menu). `Yes`-like words are green and
+`No`-like words red. Words on links work in every mode; only a workflow reads them as
+making a decision. The panel walks the flow from each start: steps numbered in the order
+the walk reaches them, the branches of a decision indented under it with the word on
+their arrow in front, `↩ back to step 3` where an arrow loops back, and `→ joins step 3`
+where two branches meet. `Copy as text` gives the same walk as a numbered list.
+
+**Loops.** A workflow may loop back and ideas may link in a circle. A tasks board and an
+outline may not, so a board whose links loop cannot be switched to either: the server
+answers `409` naming the cards in the circle, the toast repeats it, and one link of the
+loop is selected so `Unlink` is one click away.
+
 ## The home page
 
 The app opens on the home page: every plan (board) as a card in a grid, most recently
@@ -35,6 +102,13 @@ never changes) with the plan's flow sketched on it: a box where each task card s
 draws, done tasks filled in white, blocked ones dashed. Every card leans 1 to 5 degrees,
 clockwise or anticlockwise, again from the id, and straightens when the pointer is on it.
 `done / total` sits in the corner and a thin green bar under the title shows progress.
+
+That is a tasks board. Each card says what kind of plan it is (top left of the thumbnail)
+and the sketch follows the mode: leaning boxes on dotted threads for ideas, the top of an
+outline filled in for planning, pills for a workflow's starts and ends and six-sided
+decisions. The other three have no progress to show, so the corner counts cards
+(`20 ideas`) and the line under the title gives one fact instead: how many are ticked
+off, how many cards are at the top, how many decisions.
 
 The page is a free surface, not a fixed grid: drag a card (mouse or pen) and drop it
 anywhere, and that is where it stays (`home_x` / `home_y` on the board). Cards that were
@@ -165,16 +239,24 @@ the pointer stays still.
 
 With nothing selected it shows the board overview: counts of ready, blocked, and done
 tasks, then three lists. **Ready to start** is the useful one. Clicking any entry
-selects the task and scrolls the canvas to it.
+selects the task and scrolls the canvas to it. On the other kinds of board the overview
+is that mode's reading of the board (the piles, the outline, the steps; see "Modes"),
+under a line that says the mode and changes it.
 
 With a task selected it becomes the editor: title, notes, the done and delete buttons,
 the **Cover** section (the picture or link preview, `Image…`, `Link…`, `Remove`) and two
 lists. **Waits for** are the tasks that must finish first (each has an ✕ to unlink).
-**Unlocks** are the tasks that are waiting on this one.
+**Unlocks** are the tasks that are waiting on this one. The two lists are named for what
+a link means in the mode: one list, **Goes with**, on an ideas board; **Part of** and
+**Breaks into** in an outline; **Comes after** and **Then** in a workflow. Where there is
+nothing to finish, the done button is `+ Point under it` or `+ Next step` instead.
+
+With a link selected it shows the two cards, **Written on it** (the words on the link),
+the sides the arrow is attached to, and `Unlink`.
 
 On a phone the panel is a bottom sheet that slides up when you tap a task. The `List`
 button in the top bar switches to **list mode**: the panel fills the screen (ready,
-blocked and done lists with a `+ Task` button; a task's details with `← Back`) and the
+blocked and done lists, or the mode's own lists, with a `+ Task` button; a task's details with `← Back`) and the
 canvas is hidden, which is the comfortable way to work through a board with a thumb.
 `Board` brings the canvas back. The choice is remembered on that phone. `Fit` on a phone
 never goes below 60%, so cards stay readable; the rest of the board is a pan away. Touch
@@ -184,7 +266,9 @@ targets (the done circle, the link handles, list rows, buttons) are larger on to
 
 The dropdown in the top bar switches between boards. Each board is a separate canvas
 with its own tasks and links, meant for one project or app. The `⋯` button next to it
-creates, renames, or deletes a board. Deleting a board deletes all of its tasks.
+creates, renames, archives or deletes a board, and says what it is for. Creating one
+(here or with `+ New plan` on the home page) first asks what it is for. Deleting a board
+deletes all of its tasks.
 
 The app remembers which board you had open and the pan/zoom of each board in the
 browser's local storage, so every device has its own view position.
@@ -206,31 +290,46 @@ A plain Node HTTP server, no framework; the only npm package is the `pg` Postgre
 The database has four tables:
 
 ```
-boards  id, name, created_at
+boards  id, name, created_at, archived_at, home_x, home_y,
+        mode ('tasks' | 'ideas' | 'plan' | 'flow')
 tasks   id, board_id, title, notes, status ('todo' | 'done'), x, y,
         created_at, updated_at, done_at, deleted_at
-deps    board_id, from_id, to_id, from_side, to_side   -- "to waits for from"
+deps    board_id, from_id, to_id, from_side, to_side,  -- "to waits for from" on a tasks board
+        label                                          -- the words on the arrow, or NULL
 covers  task_id, kind ('image' | 'link'), url, title, description, site,
         mime, image (the picture bytes), width, height, updated_at
 ```
+
+A card is a row in `tasks` whatever the board is for, and `status` is the checkbox
+whether or not the mode shows it. `mode` and `label` were added on 2026-11-21 with
+`ALTER TABLE … ADD COLUMN IF NOT EXISTS` at start-up; every board that existed became a
+tasks board, so nothing changed until a mode was switched.
 
 `x` and `y` are the box position on the canvas in canvas units. Deleting a board
 cascades to its tasks, and deleting a task cascades to its links and its cover. The
 picture of a cover lives in the database as bytes, so the nightly Postgres dumps include
 it and nothing needs a file volume.
 
-The server enforces these rules (the frontend checks the first two as well):
+The server enforces these rules (the frontend checks the first two as well). The first
+three depend on the board's mode (`MODES` and `NO_LOOPS` at the top of `server.js`):
 
 - `PATCH /api/tasks/:id` with `status: "done"` returns `409` while the task has an
-  unfinished blocker, unless the body also has `force: true`.
+  unfinished blocker, unless the body also has `force: true`. Only on a tasks board:
+  elsewhere nothing is blocked.
 - `POST /api/boards/:id/deps` returns `409` if the new link would make a cycle.
   The check (`cycleIn`) walks the existing links from the target task and refuses if
-  it can reach the source task.
+  it can reach the source task. Only on a tasks board and in an outline: a workflow and
+  an ideas board may loop.
+- `PATCH /api/boards/:id` with `mode` `tasks` or `plan` returns `409` while the board's
+  links loop. `findLoop` walks the links depth first and returns one loop; the answer is
+  `{error, loop: [ids]}` with the cards' titles in the message. A `PATCH` checks all of
+  its fields before it saves any of them.
 - `DELETE /api/tasks/:id` does not delete the row: it sets `deleted_at`. Every read
   skips such rows (the board's tasks, its links, the counts, `PATCH`, linking), so to
   the rest of the app the task is gone. `POST /api/tasks/:id/restore` clears the stamp,
   re-checks the task's links against the links added meanwhile, deletes any that would
-  close a loop, and returns the task with the links that survived. Rows older than
+  close a loop (on a board that cannot have loops), and returns the task with the links
+  that survived. Rows older than
   seven days are really deleted at start-up and after each delete.
 - `POST /api/tasks/:id/cover` with an `image/*` body stores the bytes after checking
   the file's magic number (PNG, JPEG, GIF, WebP, AVIF, BMP; up to 8 MiB) and reads the
@@ -253,6 +352,27 @@ Vanilla JavaScript, one file, no build step. The important pieces:
   current selection, and the view (`x`, `y` offset and scale `s`).
 - **Derived state**: `stateOf(task)` returns `ready`, `blocked`, or `done` by looking at
   the task's blockers. `reaches(a, b)` walks the links for the cycle check.
+- **Modes**: the `MODES` table holds each mode's words (the add button, the hint, what a
+  new link's toast says, the panel's list names) and `applyMode()` puts the open board's
+  mode on `body[data-mode]`, which is all `style.css` needs to restyle cards and links.
+  `stateOf()` answers `open` or `done` on an ideas board and always `open` in an outline
+  or a workflow, so the tasks-only code paths (blocked, unlocked, `Mark done anyway`)
+  never run there. `graph()` works out, once per redraw, the links into and out of each
+  card and each card's distance from a card nothing points to; `levelOf()` (outline) and
+  `roleFrom()` (workflow: decision, start, end, step) read a card's look off it, and
+  `updateNode()` turns that into classes (`lv0`…, `start`, `decision`, `hub`).
+  `linkProblem()` is the one place that says whether a new link is allowed (loops only
+  where the mode permits). `leanOf(id)` is an idea card's fixed tilt, and `anchor()` turns
+  a leaning card's link ends with it. The panel's overview is one function per mode in
+  `OVERVIEW`; `outline()` and `walk()` produce the rows for the outline and the
+  step-by-step list, and `outlineText()` / `flowText()` the copied text. `setMode()`
+  switches (one `PATCH`, then a full redraw) and pushes the switch back onto the undo
+  stack; `showModeMenu()` is the list of four, used for switching and for a new plan.
+- **Words on links** are `div.edge-label` elements in `#edgeLabels`, a layer between the
+  SVG of links and the cards, placed on the middle of each labelled path by
+  `renderEdges()`. `setDepLabel()` shows the words at once and saves them half a second
+  after the typing stops (`flushLabel()`); it also redraws the card the arrow leaves,
+  because on a workflow the words make that card a decision.
 - **The canvas** is a `#viewport` div with a `#world` div inside it. Panning and zooming
   just set a CSS `transform: translate(...) scale(...)` on `#world`. Boxes are plain
   `div.node` elements positioned with `left`/`top`; inside, a `.cover` block (hidden
@@ -299,7 +419,9 @@ Vanilla JavaScript, one file, no build step. The important pieces:
 - **Saving** is immediate for moves, links, done toggles and covers (one request each).
   Title and notes edits are debounced half a second so typing does not spam the server.
 - **Arrange** computes each task's depth (longest chain of blockers behind it) and puts
-  each depth in a column. A link that skips columns (A → C while A → B → C also exists)
+  each depth in a column. An arrow that loops back (workflow, ideas) is left out of the
+  placing, and on an ideas board the cards with no links go into a block of columns
+  under the rest. A link that skips columns (A → C while A → B → C also exists)
   gets an invisible zero-height "lane" item in every column it skips, so the cards in
   those columns are pushed aside and the link has clear space instead of running under
   a card. Each column is then ordered so every item sits level with the average centre
@@ -317,23 +439,27 @@ Vanilla JavaScript, one file, no build step. The important pieces:
 
 ### API summary
 
-All requests and responses are JSON, except the two picture routes. In every link,
-`from` is the task that must
+All requests and responses are JSON, except the two picture routes. A link goes from
+`from` to `to`; on a tasks board `from` is the task that must
 finish first and `to` is the one that waits. `from_side` and `to_side` (`left`, `right`,
 `top` or `bottom`) say where the arrow is attached; they default to `right` and `left`.
+`label` is the words on the link (40 characters at most, `null` for none). A board's
+`mode` is `tasks`, `ideas`, `plan` or `flow`.
 A task's `cover` is `null` or `{kind, url, title, description, site, image, width, height, v}`
 where `kind` is `image` or `link`, `image` says whether there is a picture, and `v`
 is the cache key for it.
 
 ```
-GET    /api/boards                     boards with total/done counts
-POST   /api/boards                     {name}
-PATCH  /api/boards/:id                 {name}
+GET    /api/boards                     boards with mode and total/done counts
+GET    /api/overview                   {boards}: each with its cards (id, title, x, y, status, cover)
+                                       and links, for the home page's sketches
+POST   /api/boards                     {name, mode?}
+PATCH  /api/boards/:id                 {name?, mode?, archived?, home_x?, home_y?}
 DELETE /api/boards/:id
 GET    /api/boards/:id                 {board, tasks, deps}
 POST   /api/boards/:id/tasks           {title, notes?, x?, y?}
 POST   /api/boards/:id/positions       {positions: [{id, x, y}]}
-POST   /api/boards/:id/deps            {from, to, from_side?, to_side?}
+POST   /api/boards/:id/deps            {from, to, from_side?, to_side?, label?}
 PATCH  /api/tasks/:id                  {title?, notes?, status?, x?, y?, force?}
 DELETE /api/tasks/:id                  to the trash; 404 afterwards for every other route
 POST   /api/tasks/:id/restore          {task, deps}, the links that came back with it
@@ -341,10 +467,11 @@ POST   /api/tasks/:id/cover            body: image bytes with Content-Type image
                                        or JSON {url, rename?}; returns the task
 DELETE /api/tasks/:id/cover            returns the task
 GET    /api/tasks/:id/cover-image      the picture bytes (?v= for caching)
-PATCH  /api/deps/:from/:to             {from_side?, to_side?}
+PATCH  /api/deps/:from/:to             {from_side?, to_side?, label?}   '' or null takes the words off
 DELETE /api/deps/:from/:to
 GET    /api/health
 ```
 
 Errors come back as `{"error": "message"}` with a fitting status: `400` bad input,
-`404` unknown id, `409` rule violation (blocked task, cycle), `413` body too large.
+`404` unknown id, `409` rule violation (blocked task, cycle, a mode that cannot have
+the board's loop), `413` body too large.

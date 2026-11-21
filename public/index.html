@@ -16,7 +16,7 @@
 <script>(function () { try { var t = localStorage.getItem('planflow.theme'); if (t !== 'light' && t !== 'dark') t = matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'; document.documentElement.dataset.theme = t; } catch (e) {} })();</script>
 <link rel="stylesheet" href="/style.css">
 </head>
-<body>
+<body data-mode="tasks">
 <header id="topbar">
   <a class="brand" href="#/" title="All plans (home)">
     <svg width="20" height="20" viewBox="0 0 32 32" aria-hidden="true"><circle cx="9" cy="9" r="3.5" fill="#58a6ff"/><circle cx="9" cy="23" r="3.5" fill="#58a6ff"/><circle cx="23" cy="16" r="3.5" fill="#2ea043"/><path d="M12 9.5 20 15M12 22.5 20 17" stroke="#8b949e" stroke-width="2" fill="none"/></svg>
@@ -24,6 +24,8 @@
   </a>
   <select id="boardSelect" title="Switch board"></select>
   <button id="btnBoardMenu" class="icon" title="Board options" aria-label="Board options">⋯</button>
+  <!-- What the open board is for: tasks, ideas, planning or a workflow (app.js MODES). Filled in by applyMode(). -->
+  <button id="btnMode" class="mode-btn" title="What this board is for. Click to change."><span class="mode-ico"></span><span class="mode-name">Tasks</span></button>
   <div id="progress" title="Done / total"><div class="bar"></div><span class="label"></span></div>
   <div class="spacer"></div>
   <button id="btnNewBoard" class="primary home-only" title="Start a new plan (N)">+ New plan</button>
@@ -62,9 +64,13 @@
           <marker id="arrow-satisfied" markerUnits="userSpaceOnUse" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto"><path d="M1,1 L11,6 L1,11 z" class="mk satisfied"/></marker>
           <marker id="arrow-selected" markerUnits="userSpaceOnUse" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto"><path d="M1,1 L11,6 L1,11 z" class="mk selected"/></marker>
           <marker id="arrow-temp" markerUnits="userSpaceOnUse" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto"><path d="M1,1 L11,6 L1,11 z" class="mk temp"/></marker>
+          <!-- an outline's branch ends in a bud, not an arrowhead (planning mode) -->
+          <marker id="bud" markerUnits="userSpaceOnUse" markerWidth="10" markerHeight="10" refX="8.5" refY="5" orient="auto"><circle cx="5" cy="5" r="3.5" class="mk bud"/></marker>
+          <marker id="bud-selected" markerUnits="userSpaceOnUse" markerWidth="10" markerHeight="10" refX="8.5" refY="5" orient="auto"><circle cx="5" cy="5" r="3.5" class="mk selected"/></marker>
         </defs>
         <g id="edgeLayer"></g>
       </svg>
+      <div id="edgeLabels"></div>
       <div id="nodes"></div>
       <button id="edgeUnlink" hidden title="Remove this link">✕ Unlink</button>
     </div>
@@ -77,6 +83,7 @@
 <div id="boardMenu" class="menu" hidden>
   <button data-act="new">New board</button>
   <button data-act="rename">Rename board</button>
+  <button data-act="mode">What it is for…</button>
   <button data-act="archive">Archive board</button>
   <button data-act="delete" class="danger">Delete board</button>
 </div>

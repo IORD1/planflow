@@ -16,7 +16,7 @@ Project layout:
 ```
 server.js            HTTP server, API, queries and seed
 db.js                Postgres connection pool, schema (CREATE TABLE IF NOT EXISTS), helpers
-scripts/             api-test.mjs, ui-test.mjs, ui-test-cards.mjs, ui-test-home.mjs (run against a local server), migrate-sqlite.js (one-off import)
+scripts/             api-test.mjs, ui-test.mjs, ui-test-cards.mjs, ui-test-home.mjs, ui-test-modes.mjs (run against a local server), migrate-sqlite.js (one-off import)
 public/index.html    page skeleton, top bar, SVG arrow markers
 public/app.js        all frontend logic
 public/style.css     all styling (colour tokens at the top in :root, the day-mode set under
@@ -56,6 +56,14 @@ There is no build step and no cache, the server sends files fresh each time.
 - Keyboard shortcuts are in the `keydown` handler near the end of `app.js`.
 - The side panel is built entirely in `renderPanel()`. The overview and the task
   editor are the two branches of that function; `coverSection()` is the Cover part.
+- What a board is for (tasks, ideas, planning, workflow) is its **mode**. The words and
+  rules of each are the `MODES` table near the top of `app.js` (and `MODES` / `NO_LOOPS`
+  in `server.js` for what the server enforces); the looks are the "modes" block of
+  `style.css`, keyed on `body[data-mode]`. A new wording goes in the table, not in the
+  code that uses it. The panel's overview per mode is one function each in `OVERVIEW`.
+  To add a mode: a row in both tables and the `CHECK` in `db.js` (plus an `ALTER TABLE`
+  that swaps the constraint for databases that already exist), its icon in `MODE_ICON`,
+  an `OVERVIEW` entry, its branch in `updateNode()` and `miniFlow()`, and its styles.
 - How a box looks is `makeNode()` and `updateNode()`; the picture or link preview at
   the top is `renderCover()`. Card height changes when a cover loads, and links and
   Arrange measure real heights, so anything that changes a card's size should end with
@@ -118,23 +126,32 @@ curl -s $B/api/boards
 curl -s -X POST $B/api/boards/1/tasks -H 'Content-Type: application/json' -d '{"title":"Try it","x":100,"y":100}'
 ```
 
-There are two proper test scripts in `scripts/`. Both create a board, exercise it, and
-delete it again, so run them **only against a local server on a throwaway database**
-(see "Running locally" above), never against the live app:
+There are five proper test scripts in `scripts/`. Each creates its boards, exercises them, and
+deletes them again, so run them **only against a local server on a throwaway database**
+(see "Running locally" above), never against the live app. A throwaway database does not
+need the shared server: `docker run -d --rm --name planflow-test-pg -e POSTGRES_USER=planflow_dev
+-e POSTGRES_PASSWORD=dev -e POSTGRES_DB=planflow_dev -p 127.0.0.1:55432:5432 postgres:18`
+gives `DATABASE_URL=postgres://planflow_dev:dev@127.0.0.1:55432/planflow_dev`, and
+`docker rm -f planflow-test-pg` throws it away.
 
 ```sh
-PLANFLOW_URL=http://localhost:8093 node scripts/api-test.mjs        # links, sides, cycles, trash/restore, covers
+PLANFLOW_URL=http://localhost:8093 node scripts/api-test.mjs        # links, sides, cycles, trash/restore, covers, archive, modes, labels
 PLANFLOW_URL=http://localhost:8093 node scripts/ui-test.mjs         # headless Chrome: dragging link handles
 PLANFLOW_URL=http://localhost:8093 node scripts/ui-test-cards.mjs   # headless Chrome: middle-click + type, two-click delete, undo, paste
 PLANFLOW_URL=http://localhost:8093 node scripts/ui-test-home.mjs    # headless Chrome: home page cards, drag into the archive box, restore, day mode
+PLANFLOW_URL=http://localhost:8093 node scripts/ui-test-modes.mjs   # headless Chrome: the four modes, switching and undo, loops, words on arrows, decisions, outline
 ```
+
+Use `localhost` in `PLANFLOW_URL`, not `127.0.0.1`: the cards test pastes a link to the
+server itself and expects that host name on the card.
 
 The UI tests use the browser's `WebSocket`; on Node 20 run them with `node --experimental-websocket`.
 
 The UI tests need Google Chrome at `/usr/bin/google-chrome` (or set `CHROME=`). They drive
 the real page with synthetic mouse and key events, check what the server stored and what
 the DOM shows, and leave screenshots (`sides.png`, `cards.png`, `home-dark.png`,
-`home-light.png`, `board-light.png`, `home-phone.png`) in `$SCRATCH` (default: the temp dir). The cards test fakes a paste with a synthetic `ClipboardEvent`, since
+`home-light.png`, `board-light.png`, `home-phone.png`, `modes-ideas.png`, `modes-plan.png`,
+`modes-flow.png`, `modes-home.png`, `modes-phone.png`) in `$SCRATCH` (default: the temp dir). The cards test fakes a paste with a synthetic `ClipboardEvent`, since
 headless Chrome has no clipboard, and pastes a link to the local server itself to test
 the preview fetch without touching the internet.
 

@@ -108,21 +108,21 @@ try {
   // 1. A bottom port -> C (drop just inside C's top edge): bottom -> top
   let p = await portPos(A.id, 'bottom'), r = await rect(C.id);
   await drag(p.x, p.y, r.cx, r.t + 8);
-  assert.deepEqual(await depWait(A.id, C.id), { from: A.id, to: C.id, from_side: 'bottom', to_side: 'top' }, 'A->C sides');
+  assert.deepEqual(await depWait(A.id, C.id), { from: A.id, to: C.id, from_side: 'bottom', to_side: 'top', label: null }, 'A->C sides');
   await waitEnds(A.id, C.id, await worldAnchor(A.id, 'bottom'), await worldAnchor(C.id, 'top'), 'A->C path');
   console.log('ok drag from bottom port attaches to top of target');
 
   // 2. B left port -> D (drop just inside D's right edge): left -> right
   p = await portPos(B.id, 'left'); r = await rect(D.id);
   await drag(p.x, p.y, r.r - 8, r.cy);
-  assert.deepEqual(await depWait(B.id, D.id), { from: B.id, to: D.id, from_side: 'left', to_side: 'right' }, 'B->D sides');
+  assert.deepEqual(await depWait(B.id, D.id), { from: B.id, to: D.id, from_side: 'left', to_side: 'right', label: null }, 'B->D sides');
   await waitEnds(B.id, D.id, await worldAnchor(B.id, 'left'), await worldAnchor(D.id, 'right'), 'B->D path');
   console.log('ok drag from left port attaches to right of target');
 
   // 3. A right port -> B centre-left: the classic right -> left link
   p = await portPos(A.id, 'right'); r = await rect(B.id);
   await drag(p.x, p.y, r.l + 20, r.cy);
-  assert.deepEqual(await depWait(A.id, B.id), { from: A.id, to: B.id, from_side: 'right', to_side: 'left' }, 'A->B sides');
+  assert.deepEqual(await depWait(A.id, B.id), { from: A.id, to: B.id, from_side: 'right', to_side: 'left', label: null }, 'A->B sides');
   console.log('ok classic right->left link unchanged');
 
   // 4. mid-drag: temp link snaps to the target side and that port lights up
@@ -135,7 +135,7 @@ try {
   assert.equal(midState.hot, 'top', 'top port of target is hot');
   assert.equal(midState.target, true, 'target outlined');
   assertEnds(midState.d, await worldAnchor(C.id, 'right'), await worldAnchor(D.id, 'top'), 'temp path snapped');
-  assert.deepEqual(await depWait(C.id, D.id), { from: C.id, to: D.id, from_side: 'right', to_side: 'top' }, 'C->D sides');
+  assert.deepEqual(await depWait(C.id, D.id), { from: C.id, to: D.id, from_side: 'right', to_side: 'top', label: null }, 'C->D sides');
   console.log('ok temp link snaps to the drop side; port highlighted');
 
   // 5. select the C->D link, change its sides from the panel
@@ -146,7 +146,7 @@ try {
   assert.deepEqual(await ev(`[...document.querySelectorAll('#panel .side-pick select')].map((s) => s.value)`), ['right', 'top'], 'pickers show current sides');
   await ev(`(() => { const s = document.querySelectorAll('#panel .side-pick select')[1]; s.value = 'bottom'; s.dispatchEvent(new Event('change', { bubbles: true })); })()`);
   await waitFor(async () => (await deps()).find((d) => d.from === C.id && d.to === D.id).to_side === 'bottom', 'picker change to land');
-  assert.deepEqual((await deps()).find((d) => d.from === C.id && d.to === D.id), { from: C.id, to: D.id, from_side: 'right', to_side: 'bottom' }, 'C->D after picker');
+  assert.deepEqual((await deps()).find((d) => d.from === C.id && d.to === D.id), { from: C.id, to: D.id, from_side: 'right', to_side: 'bottom', label: null }, 'C->D after picker');
   await waitEnds(C.id, D.id, await worldAnchor(C.id, 'right'), await worldAnchor(D.id, 'bottom'), 'C->D redrawn');
   await ev(`(() => { const s = document.querySelectorAll('#panel .side-pick select')[0]; s.value = 'top'; s.dispatchEvent(new Event('change', { bubbles: true })); })()`);
   await waitFor(async () => (await deps()).find((d) => d.from === C.id && d.to === D.id).from_side === 'top', 'second picker change');

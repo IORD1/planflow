@@ -144,6 +144,9 @@ main { flex: 1; display: flex; min-height: 0; }
   background: var(--bg-2); box-shadow: 0 0 0 2px var(--accent); margin: -2px -4px; padding: 2px 4px;
 }
 .node .title[contenteditable]:empty::before { content: "Task title"; color: var(--muted); }
+body[data-mode="ideas"] .node .title[contenteditable]:empty::before { content: "Idea"; }
+body[data-mode="plan"] .node .title[contenteditable]:empty::before { content: "Point"; }
+body[data-mode="flow"] .node .title[contenteditable]:empty::before { content: "Step"; }
 /* cover: a pasted picture, or a link preview, at the top of the card (like a Trello card) */
 .node .cover { display: block; border-radius: 8.5px 8.5px 0 0; overflow: hidden; background: var(--bg-2); border-bottom: 1px solid var(--border); }
 .node .cover[hidden] { display: none; }
@@ -274,7 +277,7 @@ main { flex: 1; display: flex; min-height: 0; }
 #home { display: none; }
 body.home main { display: none; }
 body.home #home { display: block; flex: 1; min-height: 0; overflow-y: auto; padding: 18px 28px 160px; }
-body.home #boardSelect, body.home #btnBoardMenu, body.home #progress, body.home #btnAdd, body.home #btnArrange, body.home #btnFit, body.home #btnList { display: none; }
+body.home #boardSelect, body.home #btnBoardMenu, body.home #btnMode, body.home #progress, body.home #btnAdd, body.home #btnArrange, body.home #btnFit, body.home #btnList { display: none; }
 body.home .home-only { display: inline-block; }
 .home-head { display: flex; align-items: baseline; gap: 12px; margin: 0 0 18px; }
 .home-head h1 { margin: 0; font-size: 20px; }
@@ -356,8 +359,145 @@ body.home #archiveBox { display: flex; }
 #archiveDrawer li button { padding: 3px 9px; font-size: 12px; }
 #archiveDrawer .empty { color: var(--muted); font-size: 13px; }
 
+/* ---------------------------------------------------------------- modes */
+/* What a board is for (app.js MODES). body[data-mode] is the open board's mode. "tasks" is
+   everything above this line: a checkbox, ready / blocked / done, arrows that turn green. The
+   other three take those away and say what a card and a link mean there.
+     ideas  cards lean like a loose pile, links are dotted threads, a quiet tick in the corner
+     plan   cards are headings and points sized by their level, links are branches ending in a bud
+     flow   starts and ends are pills, decisions have six sides, arrows carry words */
+.node .meta[hidden] { display: none; }
+.node .role { display: none; }
+.badge.open { background: rgba(139, 148, 158, 0.12); color: var(--muted); }
+.mode-svg { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.mode-ico { display: inline-flex; }
+
+/* the mode in the top bar, in the panel, and the menu both open (also "what is the new plan for?") */
+.mode-btn { display: inline-flex; align-items: center; gap: 7px; }
+.mode-line { display: flex; align-items: center; gap: 7px; background: none; border: none; padding: 0; margin-top: -8px; font-size: 13px; text-align: left; }
+.mode-line:hover { background: none; }
+.mode-line:hover .muted { color: var(--text); text-decoration: underline; }
+.menu .menu-title { font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted); padding: 6px 10px 4px; }
+.menu button.mode-item { display: grid; grid-template-columns: 16px 1fr auto; column-gap: 10px; row-gap: 1px; align-items: center; width: 290px; white-space: normal; padding: 8px 10px; }
+.mode-item .mi-name { font-weight: 600; }
+.mode-item .mi-now { font-size: 11px; color: var(--accent); text-transform: uppercase; letter-spacing: 0.5px; }
+.mode-item .mi-about { grid-column: 2 / 4; font-size: 12px; line-height: 1.4; color: var(--muted); }
+.mode-item.current .mode-ico, .mode-item.current .mi-name { color: var(--accent); }
+
+/* words written on a link (any mode), in the middle of it; Yes and No get the colours they have everywhere */
+#edgeLabels { position: absolute; left: 0; top: 0; }
+.edge-label {
+  position: absolute; transform: translate(-50%, -50%); max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  padding: 0 8px; border-radius: 999px; font-size: 12px; line-height: 19px; font-weight: 600; cursor: pointer;
+  background: var(--bg); color: var(--text); border: 1.5px solid var(--edge);
+}
+.edge-label.yes { border-color: var(--green); color: var(--green); }
+.edge-label.no { border-color: var(--red); color: var(--red); }
+.edge-label.selected { border-color: var(--orange); color: var(--orange); }
+#edges .mk.bud { fill: var(--edge); }
+#progress.plain .bar { display: none; }   /* nothing to finish on this board: no progress edge */
+
+/* --- ideas: a pile of loose cards */
+body[data-mode="ideas"] .node { transform: rotate(var(--lean, 0deg)); transition: transform 0.16s ease; }
+body[data-mode="ideas"] .node.selected { transform: none; }
+body[data-mode="ideas"] #nodes.animate .node { transition: left 0.3s ease, top 0.3s ease, transform 0.16s ease; }
+body[data-mode="ideas"] .node .body { position: relative; grid-template-columns: 1fr; padding: 9px 34px 9px 12px; }
+body[data-mode="ideas"] .node .title, body[data-mode="ideas"] .node .meta { grid-column: 1; }
+/* the tick waits in the corner: there when the pointer is on the card, when the card is selected, or once it is ticked */
+body[data-mode="ideas"] .node .check { position: absolute; right: 8px; top: 9px; margin: 0; visibility: hidden; opacity: 0; transition: opacity 0.12s; }
+body[data-mode="ideas"] .node:hover .check, body[data-mode="ideas"] .node.selected .check, body[data-mode="ideas"] .node.done .check { visibility: visible; opacity: 1; }
+body[data-mode="ideas"] .node.done { border-color: var(--border-2); }
+body[data-mode="ideas"] .node .badge { background: rgba(139, 148, 158, 0.14); color: var(--muted); }
+body[data-mode="ideas"] .node.done .title { text-decoration: none; }
+body[data-mode="ideas"] .node.hub { border-width: 2px; border-color: var(--text); }
+body[data-mode="ideas"] .node.hub .title { font-weight: 700; }
+#edges .edge.ideas { stroke-width: 2.2; stroke-dasharray: 0.1 6.5; stroke-linecap: round; }
+
+/* --- plan: an outline */
+body[data-mode="plan"] .node .check, body[data-mode="flow"] .node .check { display: none; }
+body[data-mode="plan"] .node .body { grid-template-columns: 1fr; padding: 9px 13px 10px; }
+body[data-mode="plan"] .node .title, body[data-mode="plan"] .node .meta { grid-column: 1; }
+/* the top of an outline is a block of ink: the page's text colour as its ground */
+body[data-mode="plan"] .node.lv0 { background: var(--text); border-color: var(--text); color: var(--bg); }
+body[data-mode="plan"] .node.lv0 .title { font-size: 17px; font-weight: 700; line-height: 1.22; letter-spacing: -0.1px; }
+body[data-mode="plan"] .node.lv0 .badge { background: color-mix(in srgb, var(--bg) 16%, transparent); color: var(--bg); }
+body[data-mode="plan"] .node.lv1 { border-left: 5px solid var(--text); }
+body[data-mode="plan"] .node.lv1 .title { font-size: 14.5px; font-weight: 650; }
+body[data-mode="plan"] .node.lv2 { border-left: 5px solid var(--border-2); }
+body[data-mode="plan"] .node.lv2 .title, body[data-mode="plan"] .node.lvx .title { font-weight: 400; }
+body[data-mode="plan"] .node.lvx { border-style: dashed; }
+body[data-mode="plan"] .node .badge { background: rgba(139, 148, 158, 0.14); color: var(--muted); }
+body[data-mode="plan"] .node .port { background: var(--muted); }
+
+/* --- flow: steps and decisions */
+body[data-mode="flow"] .node { border-radius: 4px; }
+body[data-mode="flow"] .node .body { grid-template-columns: 1fr; padding: 9px 13px; }
+body[data-mode="flow"] .node .title, body[data-mode="flow"] .node .meta { grid-column: 1; }
+body[data-mode="flow"] .node.start .body, body[data-mode="flow"] .node.end .body, body[data-mode="flow"] .node.decision .body { grid-template-columns: 14px 1fr; column-gap: 8px; }
+body[data-mode="flow"] .node.start .title, body[data-mode="flow"] .node.end .title, body[data-mode="flow"] .node.decision .title,
+body[data-mode="flow"] .node.start .meta, body[data-mode="flow"] .node.end .meta, body[data-mode="flow"] .node.decision .meta { grid-column: 2; }
+body[data-mode="flow"] .node.start .role, body[data-mode="flow"] .node.end .role, body[data-mode="flow"] .node.decision .role {
+  display: block; grid-row: 1 / span 2; align-self: start; width: 12px; height: 12px; margin-top: 4px;
+}
+body[data-mode="flow"] .node.start { border-radius: 23px; border-color: var(--green); }
+body[data-mode="flow"] .node.start .body, body[data-mode="flow"] .node.end .body { padding-left: 16px; padding-right: 16px; }
+body[data-mode="flow"] .node.start .role { background: var(--green); clip-path: polygon(8% 0, 100% 50%, 8% 100%); }
+body[data-mode="flow"] .node.end { border-radius: 23px; border-color: var(--text); }
+body[data-mode="flow"] .node.end .role { background: var(--text); border-radius: 2.5px; transform: scale(0.84); }
+body[data-mode="flow"] .node.has-cover.start, body[data-mode="flow"] .node.has-cover.end { border-radius: 14px; }
+body[data-mode="flow"] .node.decision .role { background: var(--orange); border-radius: 1.5px; transform: rotate(45deg) scale(0.8); }
+.badge.start, body[data-mode="flow"] .node.start .badge { background: var(--green-dim); color: var(--green); }
+.badge.end, body[data-mode="flow"] .node.end .badge { background: rgba(139, 148, 158, 0.16); color: var(--text); }
+.badge.decision, body[data-mode="flow"] .node.decision .badge { background: color-mix(in srgb, var(--orange) 18%, transparent); color: var(--orange); }
+.badge.step { background: rgba(139, 148, 158, 0.12); color: var(--muted); }
+/* A decision has six sides, pointed left and right. The points are exactly where the left and
+   right link handles sit, so links still meet the shape. Drawn by two layers behind the text
+   (the card's own box is see-through); a card with a picture on top stays a rectangle. */
+body[data-mode="flow"] .node.decision:not(.has-cover) { background: none; border-color: transparent; box-shadow: none; }
+body[data-mode="flow"] .node.decision:not(.has-cover)::before, body[data-mode="flow"] .node.decision:not(.has-cover)::after {
+  content: ""; position: absolute; z-index: 0; clip-path: polygon(17px 0, calc(100% - 17px) 0, 100% 50%, calc(100% - 17px) 100%, 17px 100%, 0 50%);
+}
+body[data-mode="flow"] .node.decision:not(.has-cover)::before { inset: -1.5px; background: var(--orange); }
+body[data-mode="flow"] .node.decision:not(.has-cover)::after { inset: 0.5px; background: var(--node); }
+body[data-mode="flow"] .node.decision .body { position: relative; z-index: 1; }
+body[data-mode="flow"] .node.decision:not(.has-cover) .body { padding-left: 22px; padding-right: 22px; }
+body[data-mode="flow"] .node.has-cover.decision { border-color: var(--orange); }
+#edges .edge.flow { stroke-width: 2; }
+
+/* --- the panel in the three modes */
+#panel li .dot.open, #panel li .dot.lv1, #panel li .dot.lv2, #panel li .dot.lvx, #panel li .dot.step { background: var(--edge); }
+#panel li .dot.lv0 { background: var(--text); border-radius: 2px; }
+#panel li .dot.start { background: var(--green); }
+#panel li .dot.end { background: var(--text); border-radius: 2px; }
+#panel li .dot.decision { background: var(--orange); border-radius: 1px; transform: rotate(45deg) scale(0.9); }
+#panel li.head { border-color: var(--border-2); font-weight: 650; }
+#panel li.head + li, #panel li.head ~ li { margin-left: 14px; }
+#panel li .n { font-size: 11px; color: var(--muted); font-weight: 400; }
+#panel li .out { color: var(--accent); text-decoration: none; padding: 0 4px; font-weight: 600; }
+#panel ul.outline li.lv0 { font-weight: 700; border-color: var(--border-2); }
+#panel ul.outline li.lv0:not(:first-child) { margin-top: 8px; }
+#panel ul.outline li.lv2 .t { color: var(--muted); }
+#panel li .num { flex: none; min-width: 18px; font-size: 11px; font-weight: 700; color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
+#panel li .via { flex: none; font-size: 11px; font-weight: 600; padding: 0 6px; border-radius: 999px; border: 1px solid var(--border-2); color: var(--muted); max-width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#panel li.back { border-style: dashed; color: var(--muted); font-size: 13px; }
+#panel section h4 .h4-act { float: right; text-transform: none; letter-spacing: 0; font-size: 12px; }
+#panel .chips { display: flex; gap: 6px; margin-top: 8px; }
+#panel .chip { padding: 3px 12px; border-radius: 999px; font-size: 12px; }
+#panel .chip.on { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); }
+
+/* --- the home page: what kind of plan a card is, and its sketch drawn that kind's way */
+.thumb-mode { position: absolute; left: 8px; top: 8px; display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600; color: #fff; background: rgba(0, 0, 0, 0.45); padding: 3px 8px 3px 6px; border-radius: 999px; }
+.thumb-mode .mode-svg { width: 13px; height: 13px; }
+.plan-bar.none { visibility: hidden; }
+.mini .mn.idea { fill: rgba(255, 255, 255, 0.34); stroke: rgba(255, 255, 255, 0.95); }
+.mini .mn.point, .mini .mn.step { fill: rgba(255, 255, 255, 0.24); stroke: rgba(255, 255, 255, 0.9); }
+.mini .mn.top, .mini .mn.start { fill: rgba(255, 255, 255, 0.94); stroke: #fff; }
+.mini .mn.end { fill: rgba(0, 0, 0, 0.38); stroke: #fff; }
+.mini .mn.decision { fill: rgba(255, 255, 255, 0.5); stroke: #fff; }
+
 @media (max-width: 760px) {
   .mobile-only { display: inline-block; }
+  #btnMode { display: none; }   /* no room in the top bar: the mode is in the ⋯ menu and at the top of the list */
   #topbar { gap: 6px; padding-left: 10px; padding-right: 10px; }
   .brand span { display: none; }
   .brand { margin-right: 0; }

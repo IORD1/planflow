@@ -3,7 +3,7 @@
   const $ = (sel, root = document) => root.querySelector(sel);
   const viewport = $('#viewport'), world = $('#world'), edgeLayer = $('#edgeLayer'), nodesLayer = $('#nodes');
   const panel = $('#panel'), toastEl = $('#toast'), boardSelect = $('#boardSelect'), edgeUnlink = $('#edgeUnlink');
-  const boardMenu = $('#boardMenu'), zoomLabel = $('#zoomLabel');
+  const boardMenu = $('#boardMenu'), zoomLabel = $('#zoomLabel'), edgeLabels = $('#edgeLabels');
   const home = $('#home'), planGrid = $('#planGrid'), archiveBox = $('#archiveBox'), archiveDrawer = $('#archiveDrawer');
   const NODE_W = 210, MIN_S = 0.2, MAX_S = 3, DRAG_THRESHOLD = 4;
   const MOBILE_FIT_S = 0.6;   // the smallest scale Fit goes to on a phone (fitView)
@@ -23,6 +23,7 @@
     if (b) { b.textContent = on ? 'Board' : 'List'; b.setAttribute('aria-pressed', String(on)); }
     if (on) panel.classList.add('open');
     else if (isMobile()) panel.classList.toggle('open', !!state.selected);
+    if (state.boardId) renderPanel();   // the list's header differs from the sheet's (add button instead of ✕)
   }
 
   // ---------------------------------------------------------------- theme (day / dark)
@@ -55,6 +56,98 @@
   const nodeEls = new Map();
   const pointers = new Map();
   let gesture = null;
+
+  // ---------------------------------------------------------------- modes
+  // What a board is for (board.mode; the rules are in server.js MODES). The rows are the same in
+  // every mode. The mode decides what a card and a link mean, so what they look like, what the
+  // panel lists and what the app calls things. Switching never loses anything: a checkbox that
+  // a mode hides is still ticked when you switch back.
+  //   tasks  to-dos that wait for each other: ready / blocked / done, a link is "waits for"
+  //   ideas  a pile of ideas, links and pictures: nothing blocks, a link is "goes with", a tick is optional
+  //   plan   an outline: a link is "breaks into", cards are headings and points, nothing to finish
+  //   flow   a workflow: a link is "then" and can carry a word, cards are steps and decisions (roleFrom), loops allowed
+  const MODES = {
+    tasks: {
+      label: 'Tasks', one: 'task', many: 'tasks', a: 'a task', add: '+ Task', fresh: 'New task', boardName: 'New project',
+      about: 'Things to do, in order. A card unlocks when everything it waits for is done.',
+      switched: 'Cards wait for each other again.',
+      notes: 'Notes, links, acceptance criteria…',
+      next: 'Add next step →', nextTitle: 'New task to the right that waits for this one',
+      port: 'Drag onto another task: that task will wait for this one',
+      drag: 'onto another task to make it wait for this one',
+      linked: (a, b) => `"${b}" now waits for "${a}"`,
+      rule: 'A link A → B means B waits for A. Tasks light up blue when everything they wait for is done.',
+    },
+    ideas: {
+      label: 'Ideas', one: 'idea', many: 'ideas', a: 'an idea', add: '+ Idea', fresh: 'New idea', boardName: 'Ideas',
+      about: 'A pile of ideas, links and pictures. Nothing blocks anything. Tick one off once it is watched, bought or used.',
+      switched: 'Nothing blocks anything now. Ticks are kept.',
+      notes: 'Why it caught your eye, where it is from…',
+      next: 'Add an idea that goes with it →', nextTitle: 'New idea to the right, linked to this one',
+      port: 'Drag onto another idea to keep the two together',
+      drag: 'onto another idea to keep the two together',
+      linked: (a, b) => `"${a}" and "${b}" go together`,
+      rule: 'A link only says two cards go together. A card with links going out is a pile; the panel lists what is in it.',
+    },
+    plan: {
+      label: 'Planning', one: 'point', many: 'points', a: 'a point', add: '+ Point', fresh: 'New point', boardName: 'New plan',
+      about: 'An outline. A card breaks down into the cards it points to. No checkboxes, nothing to finish.',
+      switched: 'Checkboxes are hidden, not lost.',
+      notes: 'What this part is about, open questions…',
+      next: 'Add a point under it →', nextTitle: 'New point to the right, one level below this one',
+      port: 'Drag onto another card to put that card under this one',
+      drag: 'onto another card to put it under this one',
+      linked: (a, b) => `"${b}" is now under "${a}"`,
+      rule: 'A link A → B means B is a part of A. The panel reads the cards as an outline you can copy.',
+    },
+    flow: {
+      label: 'Workflow', one: 'step', many: 'steps', a: 'a step', add: '+ Step', fresh: 'New step', boardName: 'New workflow',
+      about: 'Steps and decisions. An arrow means "then", can carry a word such as Yes or No, and may loop back.',
+      switched: 'Arrows mean "then" now. Checkboxes are hidden, not lost.',
+      notes: 'What happens in this step, who or what does it…',
+      next: 'Add next step →', nextTitle: 'New step to the right, after this one',
+      port: 'Drag onto the step that comes next',
+      drag: 'onto the step that comes next · double-click an arrow to write on it',
+      linked: (a, b) => `After "${a}" comes "${b}"`,
+      rule: 'An arrow A → B means B comes after A. A card that asks a question (ends in "?", starts with "Is"), or has words on its arrows, is a decision.',
+    },
+  };
+  const MODE_IDS = Object.keys(MODES);
+  const modeOf = (b) => (b && MODES[b.mode] ? b.mode : 'tasks');
+  const modeId = () => modeOf(state.board);
+  const M = () => MODES[modeId()];
+  const loopsOk = () => modeId() === 'ideas' || modeId() === 'flow';
+  const count = (n, def) => `${n} ${n === 1 ? def.one : def.many}`;
+  // The small drawing that stands for a mode (top bar, menus, home page): made of the same things
+  // the mode puts on the canvas, a ticked circle, loose cards, an indented outline, a decision.
+  const MODE_ICON = {
+    tasks: ['circle:8,8,5.6', 'M5.4 8.2l1.9 1.9 3.4-3.8'],
+    ideas: ['rect:1.8,3.6,7.4,5.4,-11', 'rect:7,7.2,7.4,5.4,8'],
+    plan: ['M2 3.5h7.5', 'M3.4 5.6v6.9h2', 'M3.4 8.2h2', 'M7.4 8.2h6.6', 'M7.4 12.5h4.6'],
+    flow: ['M8 4.4l3.6 3.6-3.6 3.6-3.6-3.6z', 'M1.4 8h3', 'M11.6 8h3', 'M13.1 6.5l1.5 1.5-1.5 1.5'],
+  };
+  function modeIcon(id) {
+    const svg = svgEl('svg', { viewBox: '0 0 16 16', class: 'mode-svg', 'aria-hidden': 'true' });
+    for (const part of MODE_ICON[id] || MODE_ICON.tasks) {
+      const [kind, nums] = part.includes(':') ? part.split(':') : ['path', part];
+      if (kind === 'path') { svg.append(svgEl('path', { d: nums })); continue; }
+      const v = nums.split(',').map(Number);
+      if (kind === 'circle') svg.append(svgEl('circle', { cx: v[0], cy: v[1], r: v[2] }));
+      else svg.append(svgEl('rect', { x: v[0], y: v[1], width: v[2], height: v[3], rx: 1.3, transform: `rotate(${v[4]} ${v[0] + v[2] / 2} ${v[1] + v[3] / 2})` }));
+    }
+    return svg;
+  }
+  // The open board's mode on the page: body[data-mode] is what style.css keys on, and the top
+  // bar's words follow it (called when a board opens and when its mode is switched).
+  function applyMode() {
+    const id = modeId(), def = MODES[id];
+    document.body.dataset.mode = id;
+    const add = $('#btnAdd'); add.textContent = def.add; add.title = `Add ${def.a} (N)`;
+    $('#btnMode .mode-ico').replaceChildren(modeIcon(id));
+    $('#btnMode .mode-name').textContent = def.label;
+    $('#hint').replaceChildren(`Right-click for actions · double-click or middle-click empty space to add ${def.a} and type its name · paste an image or a link to give a card a cover · drag a `,
+      h('b', {}, '●'), ` handle (any side) ${def.drag} · scroll to zoom, drag to pan`);
+  }
 
   // ---------------------------------------------------------------- utils
   const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
@@ -94,7 +187,7 @@
       body: body ? (blob ? body : JSON.stringify(body)) : undefined,
     });
     const data = res.status === 204 ? null : await res.json().catch(() => null);
-    if (!res.ok) throw new Error((data && data.error) || `${res.status} ${res.statusText}`);
+    if (!res.ok) { const err = new Error((data && data.error) || `${res.status} ${res.statusText}`); err.data = data; throw err; }
     return data;
   }
   const store = {
@@ -113,9 +206,61 @@
   // ---------------------------------------------------------------- graph helpers
   const blockersOf = (id) => state.deps.filter((d) => d.to === id).map((d) => state.tasks.get(d.from)).filter(Boolean);
   const dependentsOf = (id) => state.deps.filter((d) => d.from === id).map((d) => state.tasks.get(d.to)).filter(Boolean);
+  // ready / blocked / done on a tasks board. On an ideas board a card is ticked ('done') or not
+  // ('open') and nothing waits for anything; an outline and a workflow have nothing to finish.
   function stateOf(t) {
+    const m = modeId();
+    if (m === 'plan' || m === 'flow') return 'open';
     if (t.status === 'done') return 'done';
+    if (m === 'ideas') return 'open';
     return blockersOf(t.id).some((b) => b.status !== 'done') ? 'blocked' : 'ready';
+  }
+  // Facts about the links that a card's look depends on, worked out once per redraw (renderAll and
+  // refreshNodes clear it): the links into and out of each card, and how far each card is from
+  // a card that nothing points to (its level in an outline).
+  let graphCache = null;
+  function graph() {
+    if (graphCache) return graphCache;
+    const ins = new Map(), outs = new Map(), depth = new Map();
+    for (const id of state.tasks.keys()) { ins.set(id, []); outs.set(id, []); }
+    for (const d of state.deps) { if (ins.has(d.to) && outs.has(d.from)) { ins.get(d.to).push(d); outs.get(d.from).push(d); } }
+    let edge = [...state.tasks.keys()].filter((id) => !ins.get(id).length);
+    for (const id of edge) depth.set(id, 0);
+    while (edge.length) {
+      const next = [];
+      for (const id of edge) for (const d of outs.get(id)) if (!depth.has(d.to)) { depth.set(d.to, depth.get(id) + 1); next.push(d.to); }
+      edge = next;
+    }
+    return (graphCache = { ins, outs, depth });
+  }
+  const insOf = (id) => graph().ins.get(id) || [];
+  const outsOf = (id) => graph().outs.get(id) || [];
+  // A workflow card's part in the flow, read off its title and its links. A decision is a card
+  // that asks something ("Is it a GPay screenshot", "Endpoint working?") or whose arrows out
+  // carry words (Yes / No): a card that simply feeds two others is a plain step, not a decision.
+  // A flow starts where nothing leads in and ends where nothing leaves.
+  const asks = (title) => /\?\s*$/.test(title) || /^(is|are|does|did|should|if)\s/i.test(title);
+  function roleFrom(title, nin, outs) {
+    if (asks(title || '') || outs.some((d) => d.label)) return 'decision';
+    if (!nin && outs.length) return 'start';
+    if (nin && !outs.length) return 'end';
+    return 'step';
+  }
+  const roleOf = (t) => roleFrom(t.title, insOf(t.id).length, outsOf(t.id));
+  const ROLE_LABEL = { decision: 'Decision', start: 'Start', end: 'End', step: 'Step' };
+  // An outline card's level: 0 the top of an outline, 1 a section, 2 anything deeper; 'x' for a
+  // card with no links at all (a loose note).
+  function levelOf(t) {
+    if (!insOf(t.id).length && !outsOf(t.id).length) return 'x';
+    return Math.min(graph().depth.get(t.id) ?? 0, 2);
+  }
+  // What links two cards, for a new link from -> to: null when it is fine, else why not.
+  function linkProblem(from, to) {
+    if (from === to) return 'A card cannot link to itself.';
+    if (state.deps.some((d) => d.from === from && d.to === to)) return 'Already linked.';
+    if (modeId() === 'ideas' && state.deps.some((d) => d.from === to && d.to === from)) return 'Already linked.';
+    if (!loopsOk() && reaches(to, from)) return "Can't link: that would make a loop.";
+    return null;
   }
   function reaches(from, target) {           // can we walk from -> ... -> target along deps?
     const seen = new Set(); const stack = [from];
@@ -199,26 +344,47 @@
 
   // ---------------------------------------------------------------- nodes
   function makeNode(t) {
-    const el = h('div', { class: 'node', 'data-id': t.id },
+    const el = h('div', { class: 'node', 'data-id': t.id, style: `--lean:${leanOf(t.id)}deg` },
       h('div', { class: 'cover', hidden: true }),
       h('div', { class: 'body' },
         h('button', { class: 'check', 'aria-label': 'Toggle done' }, '✓'),
+        h('span', { class: 'role', 'aria-hidden': 'true' }),       // a workflow card's mark: start, decision, end
         h('div', { class: 'title' }),
         h('div', { class: 'meta' }, h('span', { class: 'badge' }))),
-      ...SIDES.map((s) => h('div', { class: 'port ' + s, 'data-side': s, title: 'Drag onto another task: that task will wait for this one' })));
+      ...SIDES.map((s) => h('div', { class: 'port ' + s, 'data-side': s, title: M().port })));
     updateNode(el, t);
     return el;
   }
+  // How far an idea card leans on an ideas board, 0.6..1.6° either way: a pile of loose cards,
+  // like the plan cards on the home page. Always the same for the same card (see rnd).
+  const leanOf = (id) => Math.round((0.6 + rnd(id, 7)) * (rnd(id, 8) < 0.5 ? -10 : 10)) / 10;
+  const leaning = (id) => modeId() === 'ideas' && !isSel('task', id);   // the selected card sits straight
   function updateNode(el, t) {
-    const st = stateOf(t);
-    el.className = 'node ' + st + (isSel('task', t.id) ? ' selected' : '');
+    const m = modeId(), st = stateOf(t), nout = outsOf(t.id).length;
+    let cls = 'node ' + st, badge = '', check = '';
+    if (m === 'tasks') {
+      const n = blockersOf(t.id).filter((b) => b.status !== 'done').length;
+      badge = st === 'done' ? 'Done' : st === 'ready' ? 'Ready' : `Blocked by ${n}`;
+      check = st === 'blocked' ? 'Finish its blockers first' : st === 'done' ? 'Reopen' : 'Mark done';
+    } else if (m === 'ideas') {
+      if (nout) { cls += ' hub'; badge = `${nout} in this pile`; }
+      check = st === 'done' ? 'Untick' : 'Tick off (watched, bought, used…)';
+    } else if (m === 'plan') {
+      cls += ' lv' + levelOf(t);
+      if (nout) badge = count(nout, MODES.plan);
+    } else {
+      const role = roleOf(t); cls += ' ' + role;
+      if (role !== 'step') badge = ROLE_LABEL[role];
+    }
+    el.className = cls + (t.cover ? ' has-cover' : '') + (isSel('task', t.id) ? ' selected' : '');
     el.style.left = t.x + 'px'; el.style.top = t.y + 'px';
     const title = $('.title', el);
     if (title.textContent !== t.title) title.textContent = t.title;   // leave the caret alone while it is being typed
     renderCover(el, t);
-    const n = blockersOf(t.id).filter((b) => b.status !== 'done').length;
-    $('.badge', el).textContent = st === 'done' ? 'Done' : st === 'ready' ? 'Ready' : `Blocked by ${n}`;
-    $('.check', el).title = st === 'blocked' ? 'Finish its blockers first' : st === 'done' ? 'Reopen' : 'Mark done';
+    $('.badge', el).textContent = badge;
+    $('.meta', el).hidden = !badge;
+    $('.check', el).title = check;
+    for (const p of el.querySelectorAll('.port')) p.title = MODES[m].port;
   }
   // The picture / link preview at the top of a card. Rebuilt only when the cover changed,
   // so the image is not reloaded on every redraw.
@@ -244,20 +410,26 @@
     }
   }
   function renderAll() {
-    endEdit();
+    endEdit(); graphCache = null;
     nodesLayer.replaceChildren(); nodeEls.clear();
     for (const t of state.tasks.values()) { const el = makeNode(t); nodesLayer.appendChild(el); nodeEls.set(t.id, el); }
     renderEdges(); renderPanel(); renderProgress();
   }
   function refreshNodes() {
+    graphCache = null;
     for (const [id, el] of nodeEls) updateNode(el, state.tasks.get(id));
     renderEdges(); renderPanel(); renderProgress();
   }
   function renderProgress() {
-    const total = state.tasks.size;
+    const m = modeId(), def = MODES[m], total = state.tasks.size;
     const done = [...state.tasks.values()].filter((t) => t.status === 'done').length;
-    $('#progress .bar').style.width = total ? (done / total * 100) + '%' : '0';
-    $('#progress .label').textContent = total ? `${done} / ${total} done` : 'no tasks yet';
+    // Only a tasks board has progress; an ideas board shows its ticks once there are some.
+    const ticks = m === 'tasks' || (m === 'ideas' && done > 0);
+    $('#progress .bar').style.width = ticks && total ? (done / total * 100) + '%' : '0';
+    $('#progress .label').textContent = !total ? `no ${def.many} yet` : m === 'tasks' ? `${done} / ${total} done`
+      : ticks ? `${done} / ${total} ticked` : count(total, def);
+    $('#progress').title = m === 'tasks' ? 'Done / total' : ticks ? 'Ticked off / total' : 'Cards on this board';
+    $('#progress').classList.toggle('plain', !ticks);
   }
 
   // ---------------------------------------------------------------- inline title editing
@@ -323,6 +495,10 @@
     const dir = DIR[side] || DIR.right;
     const p = side === 'left' ? { x: t.x, y: t.y + hh / 2 } : side === 'top' ? { x: t.x + w / 2, y: t.y }
       : side === 'bottom' ? { x: t.x + w / 2, y: t.y + hh } : { x: t.x + w, y: t.y + hh / 2 };
+    if (leaning(id)) {             // the card is turned a little about its middle (ideas board): turn the point with it
+      const a = leanOf(id) * Math.PI / 180, cx = t.x + w / 2, cy = t.y + hh / 2, dx = p.x - cx, dy = p.y - cy;
+      p.x = cx + dx * Math.cos(a) - dy * Math.sin(a); p.y = cy + dx * Math.sin(a) + dy * Math.cos(a);
+    }
     return { ...p, dir };
   }
   // Which side of card `id` is closest to world point p: a dropped link attaches there.
@@ -378,21 +554,36 @@
     }
     return `M ${a.x} ${a.y} C ${a.x + d1} ${a.y}, ${x1 - d1} ${y}, ${x1} ${y} L ${x2} ${y} C ${x2 + d2} ${y}, ${b.x - d2} ${b.y}, ${b.x} ${b.y}`;
   }
+  // A link is drawn by what it means on this board: an arrow that turns green once its blocker is
+  // done (tasks), a dotted thread with no direction (ideas), a branch ending in a bud (plan), a
+  // plain arrow (flow). Words written on a link sit on its middle, in every mode.
+  const EDGE_END = { pending: 'arrow-pending', satisfied: 'arrow-satisfied', selected: 'arrow-selected', flow: 'arrow-pending', plan: 'bud' };
   function renderEdges() {
     edgeLayer.replaceChildren();
     edgeUnlink.hidden = true;
+    const mode = modeId(), labels = [];
     for (const d of state.deps) {
       if (!nodeEls.has(d.from) || !nodeEls.has(d.to)) continue;
       const sel = isSel('edge', d);
-      const kind = sel ? 'selected' : state.tasks.get(d.from).status === 'done' ? 'satisfied' : 'pending';
+      const kind = mode !== 'tasks' ? mode : state.tasks.get(d.from).status === 'done' ? 'satisfied' : 'pending';
+      const end = mode === 'ideas' ? null : sel && mode === 'plan' ? 'bud-selected' : EDGE_END[sel ? 'selected' : kind];
       const dAttr = edgePath(d);
-      const p = svgEl('path', { d: dAttr, class: `edge ${kind}`, 'marker-end': `url(#arrow-${kind})` });
+      const attrs = { d: dAttr, class: `edge ${kind}${sel ? ' selected' : ''}` };
+      if (end) attrs['marker-end'] = `url(#${end})`;
+      const p = svgEl('path', attrs);
       edgeLayer.append(p, svgEl('path', { d: dAttr, class: 'edge-hit', 'data-from': d.from, 'data-to': d.to }));
-      if (sel) {
-        const m = p.getPointAtLength(p.getTotalLength() / 2);
-        edgeUnlink.style.left = m.x + 'px'; edgeUnlink.style.top = m.y + 'px'; edgeUnlink.hidden = false;
+      if (!sel && !d.label) continue;
+      const m = p.getPointAtLength(p.getTotalLength() / 2);
+      if (d.label) {
+        const tone = /^(yes|y|ok|true|pass(ed)?|success)$/i.test(d.label) ? ' yes' : /^(no|n|false|fail(ed)?|error)$/i.test(d.label) ? ' no' : '';
+        labels.push(h('div', { class: 'edge-label edge-hit' + tone + (sel ? ' selected' : ''), 'data-from': d.from, 'data-to': d.to,
+          style: `left:${m.x}px;top:${m.y}px`, title: 'Double-click to change' }, d.label));
+      }
+      if (sel) {     // the Unlink button sits on the middle of the link, or just under the words on it
+        edgeUnlink.style.left = m.x + 'px'; edgeUnlink.style.top = (m.y + (d.label ? 28 : 0)) + 'px'; edgeUnlink.hidden = false;
       }
     }
+    edgeLabels.replaceChildren(...labels);
     if (gesture && gesture.type === 'link' && gesture.cur && nodeEls.has(gesture.from)) {
       const a = anchor(gesture.from, gesture.fromSide);
       const b = gesture.target && nodeEls.has(gesture.target) ? anchor(gesture.target, gesture.targetSide)   // snap to the drop side
@@ -402,7 +593,10 @@
   }
 
   // ---------------------------------------------------------------- selection + panel
+  let edgePickedAt = 0;   // when a link was last selected (see the Unlink button's click)
   function select(sel) {
+    flushLabel();
+    if (sel && sel.type === 'edge' && !isSel('edge', sel)) edgePickedAt = performance.now();
     state.selected = sel;
     for (const [id, el] of nodeEls) el.classList.toggle('selected', isSel('task', id));
     renderEdges(); renderPanel();
@@ -424,10 +618,14 @@
       if (cur) { cur.updated_at = t.updated_at; }
     }).catch((e) => toast('Save failed: ' + e.message));
   }
-  function taskRow(t, extra) {
-    const st = stateOf(t);
-    return h('li', { class: 'clickable', onclick: () => { select({ type: 'task', id: t.id }); if (!inList()) centerOn(t.id); } },
-      h('span', { class: 'dot ' + st }), h('span', { class: 't' }, t.title), extra);
+  // The dot in front of a card's name in the panel: its state (tasks, ideas), its part in the
+  // flow (workflow) or its level (outline).
+  const dotOf = (t) => (modeId() === 'flow' ? roleOf(t) : modeId() === 'plan' ? 'lv' + levelOf(t) : stateOf(t));
+  // opts: before (a chip or number in front of the name), indent (levels), cls, muted
+  function taskRow(t, extra, opts = {}) {
+    return h('li', { class: 'clickable' + (opts.cls ? ' ' + opts.cls : ''), style: opts.indent ? `margin-left:${opts.indent * 16}px` : null,
+      onclick: () => { select({ type: 'task', id: t.id }); if (!inList()) centerOn(t.id); } },
+      opts.before, h('span', { class: 'dot ' + dotOf(t) }), h('span', { class: 't' }, t.title), extra);
   }
   const setPanel = (...kids) => panel.replaceChildren(...kids.filter(Boolean));
   function coverSection(t) {
@@ -459,32 +657,55 @@
     const sel = state.selected;
     const t = sel && sel.type === 'task' ? state.tasks.get(sel.id) : null;
     if (t) {
-      const st = stateOf(t);
+      const m = modeId(), def = MODES[m], st = stateOf(t);
       const blockers = blockersOf(t.id), dependents = dependentsOf(t.id);
       const unlinkBtn = (from, to) => h('button', { class: 'unlink', title: 'Remove link', onclick: (e) => { e.stopPropagation(); deleteDep(from, to); } }, '✕');
-      const titleInput = h('input', { type: 'text', class: 'title-input', value: t.title, maxlength: 300, placeholder: 'Task title',
+      const titleInput = h('input', { type: 'text', class: 'title-input', value: t.title, maxlength: 300, placeholder: def.fresh,
         oninput: (e) => { t.title = e.target.value; updateNode(nodeEls.get(t.id), { ...t, title: t.title || 'Untitled' }); renderEdges(); scheduleSave(t.id, { title: t.title.trim() || 'Untitled' }); },
         onblur: flushSave, onkeydown: (e) => { if (e.key === 'Enter') { e.target.blur(); } } });
-      const notes = h('textarea', { placeholder: 'Notes, links, acceptance criteria…',
+      const notes = h('textarea', { placeholder: def.notes,
         oninput: (e) => { t.notes = e.target.value; scheduleSave(t.id, { notes: t.notes }); }, onblur: flushSave });
       notes.value = t.notes || '';
       const armedNow = isArmed(t.id);
+      // What the card is, in this mode's words, and the one thing you do to it besides deleting.
+      const role = m === 'flow' ? roleOf(t) : null, level = m === 'plan' ? levelOf(t) : null;
+      const badge = m === 'tasks' ? (st === 'done' ? 'Done' : st === 'ready' ? 'Ready to start' : `Blocked by ${blockers.filter((b) => b.status !== 'done').length}`)
+        : m === 'ideas' ? (st === 'done' ? 'Ticked off' : dependents.length ? 'Pile' : 'Idea')
+        : m === 'plan' ? (level === 'x' ? 'Loose point' : level === 0 ? 'Top of an outline' : `Level ${graph().depth.get(t.id) + 1}`)
+        : ROLE_LABEL[role];
+      const badgeCls = m === 'flow' ? role : m === 'plan' ? 'open' : st;
+      const act = m === 'tasks'
+        ? (st === 'blocked' ? h('button', { disabled: true, title: 'Finish its blockers first' }, 'Blocked')
+          : h('button', { class: st === 'done' ? '' : 'primary', onclick: () => setDone(t.id, st !== 'done') }, st === 'done' ? 'Reopen' : 'Mark done'))
+        : m === 'ideas' ? h('button', { title: 'Watched, bought, used: done with it. Nothing waits for a tick.', onclick: () => setDone(t.id, st !== 'done') }, st === 'done' ? 'Untick' : 'Tick off')
+        : h('button', { title: def.nextTitle, onclick: () => createTask(t.x + NODE_W + 90, t.y, { after: t.id }) }, m === 'plan' ? '+ Point under it' : '+ Next step');
+      // The cards this one is linked with, said the way the mode reads a link. Each row can unlink.
+      const rows = (list, unlink, opts) => h('ul', {}, list.map((x) => taskRow(x, unlinkBtn(...unlink(x)), opts ? opts(x) : undefined)));
+      const part = (title, list, unlink, empty, opts) => h('section', {}, h('h4', {}, `${title} (${list.length})`),
+        list.length ? rows(list, unlink, opts) : h('div', { class: 'empty' }, empty));
+      const into = (b) => [b.id, t.id], out = (d) => [t.id, d.id];
+      const via = (d) => { const l = state.deps.find((x) => x.from === t.id && x.to === d.id)?.label; return l ? { before: h('span', { class: 'via' }, l) } : undefined; };
+      const links = m === 'tasks' ? [
+          part('Waits for', blockers, into, 'Nothing. This task can start any time.'),
+          part('Unlocks', dependents, out, 'Nothing depends on this yet. Drag its ● handle onto a task to link.')]
+        : m === 'ideas' ? [h('section', {}, h('h4', {}, `Goes with (${blockers.length + dependents.length})`),
+          blockers.length + dependents.length ? h('ul', {}, blockers.map((b) => taskRow(b, unlinkBtn(b.id, t.id))), dependents.map((d) => taskRow(d, unlinkBtn(t.id, d.id))))
+            : h('div', { class: 'empty' }, 'On its own. Drag its ● handle onto another idea to keep the two together.'))]
+        : m === 'plan' ? [
+          part('Part of', blockers, into, 'Nothing: this is the top of an outline, or a loose point.'),
+          part('Breaks into', dependents, out, 'Nothing under it yet. Drag its ● handle onto a card to put that card under this one.')]
+        : [
+          part('Comes after', blockers, into, 'Nothing leads here: a flow starts at this step.'),
+          part('Then', dependents, out, 'The flow ends here. Drag its ● handle onto the step that comes next.', via)];
       setPanel(
-        h('div', { class: 'panel-head' }, h('span', { class: 'badge ' + st }, st === 'done' ? 'Done' : st === 'ready' ? 'Ready to start' : `Blocked by ${blockers.filter((b) => b.status !== 'done').length}`), h('span', { class: 'spacer' }), closeBtn),
+        h('div', { class: 'panel-head' }, h('span', { class: 'badge ' + badgeCls }, badge), h('span', { class: 'spacer' }), closeBtn),
         titleInput, notes,
-        h('div', { class: 'row' },
-          st === 'blocked'
-            ? h('button', { disabled: true, title: 'Finish its blockers first' }, 'Blocked')
-            : h('button', { class: st === 'done' ? '' : 'primary', onclick: () => setDone(t.id, st !== 'done') }, st === 'done' ? 'Reopen' : 'Mark done'),
+        h('div', { class: 'row' }, act,
           h('button', { class: 'danger delete' + (armedNow ? ' armed' : ''), 'data-label': 'Delete', title: 'Click twice. Deleting can be undone.',
             onclick: (e) => armedDelete(t.id, e.currentTarget) }, armedNow ? 'Really?' : 'Delete')),
         st === 'blocked' ? h('div', { class: 'small' }, h('button', { class: 'link', onclick: () => setDone(t.id, true, true) }, 'Mark done anyway')) : null,
-        coverSection(t),
-        h('section', {}, h('h4', {}, `Waits for (${blockers.length})`),
-          blockers.length ? h('ul', {}, blockers.map((b) => taskRow(b, unlinkBtn(b.id, t.id)))) : h('div', { class: 'empty' }, 'Nothing. This task can start any time.')),
-        h('section', {}, h('h4', {}, `Unlocks (${dependents.length})`),
-          dependents.length ? h('ul', {}, dependents.map((d) => taskRow(d, unlinkBtn(t.id, d.id)))) : h('div', { class: 'empty' }, 'Nothing depends on this yet. Drag its ● handle onto a task to link.')),
-        h('div', { class: 'muted small' }, `Created ${fmtDate(t.created_at)}` + (t.done_at ? ` · Done ${fmtDate(t.done_at)}` : '')));
+        coverSection(t), ...links,
+        h('div', { class: 'muted small' }, `Created ${fmtDate(t.created_at)}` + (t.done_at && (m === 'tasks' || m === 'ideas') ? ` · ${m === 'tasks' ? 'Done' : 'Ticked'} ${fmtDate(t.done_at)}` : '')));
       if (armedNow) armed.btn = $('button.delete', panel);
       return;
     }
@@ -494,38 +715,177 @@
       const pick = (key, label) => h('label', { class: 'side-pick' }, h('span', {}, label),
         h('select', { onchange: (e) => setDepSides(d, { [key]: e.target.value }) },
           ...SIDES.map((s) => h('option', { value: s, selected: (d[key] || (key === 'from_side' ? 'right' : 'left')) === s }, s))));
+      const m = modeId();
+      const ends = m === 'tasks' ? ['Must finish first', 'Then this can start'] : m === 'plan' ? ['The bigger part', 'Breaks into']
+        : m === 'flow' ? ['After this', 'Comes this'] : ['These two go together', null];
+      // The words on the link. Saved as you type; Yes and No are one click on a workflow.
+      const labelInput = h('input', { type: 'text', class: 'label-input', maxlength: 40, value: d.label || '',
+        placeholder: m === 'flow' ? 'Yes, No, on error…' : 'A word or two on the line',
+        oninput: (e) => setDepLabel(d, e.target.value), onblur: flushLabel, onkeydown: (e) => { if (e.key === 'Enter') e.target.blur(); } });
+      const chip = (text) => h('button', { class: 'chip' + ((d.label || '') === text ? ' on' : ''), onclick: () => { setDepLabel(d, text); flushLabel(); renderPanel(); } }, text || 'None');
       setPanel(
-        h('div', { class: 'panel-head' }, h('span', { class: 'badge' }, 'Link'), h('span', { class: 'spacer' }), closeBtn),
-        h('section', {}, h('h4', {}, 'Must finish first'), h('ul', {}, taskRow(a))),
-        h('section', {}, h('h4', {}, 'Then this can start'), h('ul', {}, taskRow(b))),
-        h('section', {}, h('h4', {}, 'Arrow sides'),
+        h('div', { class: 'panel-head' }, h('span', { class: 'badge' }, m === 'flow' ? 'Arrow' : 'Link'), h('span', { class: 'spacer' }), closeBtn),
+        h('section', {}, h('h4', {}, ends[0]), h('ul', {}, taskRow(a), ends[1] ? null : taskRow(b))),
+        ends[1] ? h('section', {}, h('h4', {}, ends[1]), h('ul', {}, taskRow(b))) : null,
+        h('section', {}, h('h4', {}, 'Written on it'), labelInput,
+          m === 'flow' ? h('div', { class: 'chips' }, chip('Yes'), chip('No'), chip('')) : null),
+        h('section', {}, h('h4', {}, m === 'ideas' ? 'Line sides' : 'Arrow sides'),
           h('div', { class: 'sides' }, pick('from_side', 'Leaves the first card from its'), pick('to_side', 'Enters the second card at its'))),
         h('div', { class: 'row' }, h('button', { class: 'danger', onclick: () => deleteDep(d.from, d.to) }, 'Unlink')),
         h('div', { class: 'muted small' }, 'Drag a ● handle on any side of a card onto another card to make a new link; it attaches to the side you drop nearest to.'));
       return;
     }
-    const tasks = [...state.tasks.values()];
-    const groups = { ready: [], blocked: [], done: [] };
-    for (const x of tasks) groups[stateOf(x)].push(x);
-    const byTitle = (a, b) => a.title.localeCompare(b.title);
-    groups.ready.sort(byTitle); groups.blocked.sort(byTitle);
-    groups.done.sort((a, b) => (b.done_at || '').localeCompare(a.done_at || ''));
-    const list = (arr, empty) => arr.length ? h('ul', {}, arr.map((x) => taskRow(x))) : h('div', { class: 'empty' }, empty);
+    // Nothing selected: the board at a glance, as this mode reads it. On a phone in list mode
+    // this is the whole screen.
+    const m = modeId(), def = MODES[m];
+    const stat = (n, word, cls) => h('div', { class: 'stat' + (cls ? ' ' + cls : '') }, h('b', {}, n), h('span', {}, word));
+    const view = OVERVIEW[m]();
     setPanel(
-      h('div', { class: 'panel-head' }, h('h3', {}, state.board ? state.board.name : 'Board'), inList() ? h('button', { class: 'primary', onclick: addAtCenter }, '+ Task') : closeBtn),
-      h('div', { class: 'stats' },
-        h('div', { class: 'stat ready' }, h('b', {}, groups.ready.length), h('span', {}, 'ready')),
-        h('div', { class: 'stat' }, h('b', {}, groups.blocked.length), h('span', {}, 'blocked')),
-        h('div', { class: 'stat done' }, h('b', {}, groups.done.length), h('span', {}, 'done'))),
-      h('section', {}, h('h4', {}, 'Ready to start'), list(groups.ready, tasks.length ? 'Nothing is ready. Finish or unlink something.' : 'Add a task to get going.')),
-      h('section', {}, h('h4', {}, 'Blocked'), list(groups.blocked, 'No blocked tasks.')),
-      h('section', {}, h('h4', {}, 'Done'), list(groups.done, 'Nothing done yet.')),
+      h('div', { class: 'panel-head' }, h('h3', {}, state.board ? state.board.name : 'Board'), inList() ? h('button', { class: 'primary', onclick: addAtCenter }, def.add) : closeBtn),
+      h('button', { class: 'mode-line', title: 'What this board is for. Click to change.', onclick: (e) => pickMode(e.currentTarget) },
+        h('span', { class: 'mode-ico' }, modeIcon(m)), h('b', {}, def.label), h('span', { class: 'muted' }, ' · change')),
+      h('div', { class: 'stats' }, view.stats.map((s) => stat(...s))),
+      ...view.sections,
       h('div', { class: 'tips' },
-        h('div', {}, h('kbd', {}, 'N'), ' new task, then just type its name · ', h('kbd', {}, 'A'), ' arrange · ', h('kbd', {}, 'F'), ' fit view'),
-        h('div', {}, h('kbd', {}, 'Del'), ' twice removes the selected task (', h('kbd', {}, 'Ctrl+Z'), ' undoes) · ', h('kbd', {}, 'Enter'), ' rename · ', h('kbd', {}, 'Esc'), ' deselect'),
-        h('div', {}, 'Right-click a task, a link, or empty space for a menu · middle-click adds a task under the cursor.'),
-        h('div', {}, 'Paste an image or a link (', h('kbd', {}, 'Ctrl+V'), ') to give the selected task a cover, or to make a new task when nothing is selected.'),
-        h('div', {}, 'A link A → B means B waits for A. Tasks light up blue when everything they wait for is done.')));
+        h('div', {}, h('kbd', {}, 'N'), ` new ${def.one}, then just type its name · `, h('kbd', {}, 'A'), ' arrange · ', h('kbd', {}, 'F'), ' fit view'),
+        h('div', {}, h('kbd', {}, 'Del'), ` twice removes the selected ${def.one} (`, h('kbd', {}, 'Ctrl+Z'), ' undoes) · ', h('kbd', {}, 'Enter'), ' rename · ', h('kbd', {}, 'Esc'), ' deselect'),
+        h('div', {}, `Right-click a card, a link, or empty space for a menu · middle-click adds ${def.a} under the cursor.`),
+        h('div', {}, 'Paste an image or a link (', h('kbd', {}, 'Ctrl+V'), `) to give the selected card a cover, or to make a new ${def.one} when nothing is selected.`),
+        h('div', {}, def.rule)));
+  }
+
+  // ---------------------------------------------------------------- the board at a glance, per mode
+  // Each returns { stats: [[number, word, class?] x3], sections: [elements] } for renderPanel.
+  const byTitle = (a, b) => a.title.localeCompare(b.title);
+  const listOf = (arr, empty, row = (x) => taskRow(x)) => (arr.length ? h('ul', {}, arr.map(row)) : h('div', { class: 'empty' }, empty));
+  // Cards that sit next to each other on the canvas are read in the order they are laid out:
+  // top to bottom when they are stacked, left to right when they are side by side.
+  function inLayoutOrder(cards) {
+    if (cards.length < 2) return cards;
+    const xs = cards.map((t) => t.x), ys = cards.map((t) => t.y);
+    const tall = Math.max(...ys) - Math.min(...ys) >= Math.max(...xs) - Math.min(...xs);
+    return [...cards].sort((a, b) => (tall ? a.y - b.y || a.x - b.x : a.x - b.x || a.y - b.y));
+  }
+  const kidsOf = (id) => inLayoutOrder(outsOf(id).map((d) => state.tasks.get(d.to)).filter(Boolean));
+  const looseCards = () => [...state.tasks.values()].filter((t) => !insOf(t.id).length && !outsOf(t.id).length);
+  const topCards = () => inLayoutOrder([...state.tasks.values()].filter((t) => !insOf(t.id).length && outsOf(t.id).length));
+  const copyBtn = (label, text) => h('button', { class: 'link', onclick: () => copyText(text()) }, label);
+  const OVERVIEW = {
+    tasks() {
+      const tasks = [...state.tasks.values()], groups = { ready: [], blocked: [], done: [] };
+      for (const x of tasks) groups[stateOf(x)].push(x);
+      groups.ready.sort(byTitle); groups.blocked.sort(byTitle);
+      groups.done.sort((a, b) => (b.done_at || '').localeCompare(a.done_at || ''));
+      return { stats: [[groups.ready.length, 'ready', 'ready'], [groups.blocked.length, 'blocked'], [groups.done.length, 'done', 'done']], sections: [
+        h('section', {}, h('h4', {}, 'Ready to start'), listOf(groups.ready, tasks.length ? 'Nothing is ready. Finish or unlink something.' : 'Add a task to get going.')),
+        h('section', {}, h('h4', {}, 'Blocked'), listOf(groups.blocked, 'No blocked tasks.')),
+        h('section', {}, h('h4', {}, 'Done'), listOf(groups.done, 'Nothing done yet.'))] };
+    },
+    // Piles first (a card with links going out, and what it holds), then the ideas on their own,
+    // newest first. Ticked ideas sink to the end of their list.
+    ideas() {
+      const all = [...state.tasks.values()], ticked = all.filter((t) => t.status === 'done').length;
+      const sink = (arr) => [...arr].sort((a, b) => (a.status === 'done') - (b.status === 'done'));
+      const piles = [...all].filter((t) => outsOf(t.id).length).sort(byTitle);
+      const alone = looseCards().sort((a, b) => b.id - a.id);
+      const row = (x) => taskRow(x, x.cover && x.cover.kind === 'link' ? h('a', { class: 'out', href: x.cover.url, target: '_blank', rel: 'noopener', title: 'Open the link', onclick: (e) => e.stopPropagation() }, '↗') : null);
+      return { stats: [[all.length, all.length === 1 ? 'idea' : 'ideas', 'ready'], [piles.length, piles.length === 1 ? 'pile' : 'piles'], [ticked, 'ticked', 'done']], sections: [
+        ...piles.map((p) => { const kids = sink(kidsOf(p.id)); return h('section', {}, h('ul', {}, taskRow(p, h('span', { class: 'n' }, kids.length), { cls: 'head' }), kids.map(row))); }),
+        h('section', {}, h('h4', {}, `On their own (${alone.length})`), listOf(sink(alone), all.length ? 'Every idea is in a pile.' : 'Paste a link or a picture, or add an idea, to start the pile.', row))] };
+    },
+    // The cards read as an outline: every top card, then what it breaks into, indented.
+    plan() {
+      const all = [...state.tasks.values()], tops = topCards(), loose = inLayoutOrder(looseCards());
+      const rows = outline();
+      const deepest = rows.reduce((mx, r) => Math.max(mx, r.depth + 1), 0);
+      return { stats: [[all.length, all.length === 1 ? 'point' : 'points', 'ready'], [tops.length, 'at the top'], [deepest, deepest === 1 ? 'level' : 'levels']], sections: [
+        h('section', {}, h('h4', {}, 'Outline', rows.length ? h('span', { class: 'h4-act' }, copyBtn('Copy as text', outlineText)) : null),
+          rows.length ? h('ul', { class: 'outline' }, rows.map((r) => taskRow(r.t, null, { indent: r.depth, cls: 'lv' + Math.min(r.depth, 2) })))
+            : h('div', { class: 'empty' }, all.length ? 'No card is under another yet. Drag a ● handle from a card onto the card that belongs under it.' : 'Add a point, then drag its ● handle onto the points that belong under it.')),
+        loose.length ? h('section', {}, h('h4', {}, `Loose points (${loose.length})`), listOf(loose, '')) : null].filter(Boolean) };
+    },
+    // The flow walked from each start: steps numbered in the order you reach them, a fork's
+    // branches indented under it with the word on their arrow, a loop shown as "↩ back to step n"
+    // and two branches meeting as "→ joins step n".
+    flow() {
+      const all = [...state.tasks.values()], rows = walk(), loose = inLayoutOrder(looseCards());
+      const roles = all.map(roleOf);
+      const n = (r) => roles.filter((x) => x === r).length;
+      const row = (r) => (r.back
+        ? h('li', { class: 'clickable back', style: `margin-left:${r.depth * 16}px`, onclick: () => { select({ type: 'task', id: r.t.id }); if (!inList()) centerOn(r.t.id); } },
+            r.via ? h('span', { class: 'via' }, r.via) : null, h('span', { class: 't' }, `${r.loop ? '↩ back to' : '→ joins'} step ${r.back}: ${r.t.title}`))
+        : taskRow(r.t, null, { indent: r.depth, before: [h('span', { class: 'num' }, r.n), r.via ? h('span', { class: 'via' }, r.via) : null] }));
+      return { stats: [[all.length, all.length === 1 ? 'step' : 'steps', 'ready'], [n('decision'), n('decision') === 1 ? 'decision' : 'decisions'], [n('end'), n('end') === 1 ? 'end' : 'ends', 'done']], sections: [
+        h('section', {}, h('h4', {}, 'Step by step', rows.length ? h('span', { class: 'h4-act' }, copyBtn('Copy as text', flowText)) : null),
+          rows.length ? h('ul', { class: 'outline' }, rows.map(row))
+            : h('div', { class: 'empty' }, all.length ? 'No step leads to another yet. Drag a ● handle from a step onto the step that comes next.' : 'Add the first step, then drag its ● handle onto what comes next.')),
+        loose.length ? h('section', {}, h('h4', {}, `Not connected (${loose.length})`), listOf(loose, '')) : null].filter(Boolean) };
+    },
+  };
+  // An outline as rows { t, depth }: each top card, then its cards in layout order, depth first.
+  // A card under two parents is listed under both; a card already on the way down is not repeated.
+  function outline() {
+    const rows = [];
+    const down = (t, depth, path) => {
+      rows.push({ t, depth });
+      if (path.has(t.id)) return;
+      path.add(t.id); for (const k of kidsOf(t.id)) down(k, depth + 1, path); path.delete(t.id);
+    };
+    for (const top of topCards()) down(top, 0, new Set());
+    return rows;
+  }
+  // A workflow as rows { t, depth, n | back, loop, via }: `n` numbers a step the first time the
+  // walk reaches it; `back` is that number when another arrow arrives there, with `loop` true if
+  // the arrow returns to a step the walk is still inside (a retry) and false if two branches
+  // simply meet; `via` is the word on the arrow in.
+  function walk() {
+    const rows = [], num = new Map(), inside = new Set();
+    const go = (t, depth, via) => {
+      if (num.has(t.id)) { rows.push({ t, depth, via, back: num.get(t.id), loop: inside.has(t.id) }); return; }
+      num.set(t.id, num.size + 1); rows.push({ t, depth, via, n: num.size });
+      const outs = outsOf(t.id).map((d) => ({ d, to: state.tasks.get(d.to) })).filter((x) => x.to);
+      const order = inLayoutOrder(outs.map((x) => x.to));
+      outs.sort((p, q) => order.indexOf(p.to) - order.indexOf(q.to));
+      inside.add(t.id);
+      for (const x of outs) go(x.to, depth + (outs.length > 1 ? 1 : 0), x.d.label || null);
+      inside.delete(t.id);
+    };
+    for (const s of topCards()) go(s, 0, null);
+    // steps that only sit on a loop (no start leads to them): begin at the top-left one
+    for (const t of inLayoutOrder([...state.tasks.values()].filter((x) => outsOf(x.id).length || insOf(x.id).length))) if (!num.has(t.id)) go(t, 0, null);
+    return rows;
+  }
+  // The outline and the walk as plain text (Markdown lists), for pasting into a doc or a prompt.
+  const linkOf = (t) => (t.cover && t.cover.kind === 'link' ? ` <${t.cover.url}>` : '');
+  function outlineText() {
+    const lines = [`# ${state.board.name}`, ''];
+    for (const r of outline()) lines.push(r.depth === 0 ? `\n## ${r.t.title}${linkOf(r.t)}` : `${'  '.repeat(r.depth - 1)}- ${r.t.title}${linkOf(r.t)}`);
+    const loose = inLayoutOrder(looseCards());
+    if (loose.length) lines.push('\n## Loose points', ...loose.map((t) => `- ${t.title}${linkOf(t)}`));
+    return lines.join('\n').replace(/\n{3,}/g, '\n\n') + '\n';
+  }
+  function flowText() {
+    const lines = [`# ${state.board.name}`, ''];
+    for (const r of walk()) {
+      const pad = '   '.repeat(r.depth), via = r.via ? `[${r.via}] ` : '';
+      lines.push(r.back ? `${pad}   ${via}${r.loop ? 'back to' : 'joins'} step ${r.back} (${r.t.title})` : `${pad}${r.n}. ${via}${r.t.title}${roleOf(r.t) === 'decision' ? '  (decision)' : ''}`);
+    }
+    const loose = inLayoutOrder(looseCards());
+    if (loose.length) lines.push('', 'Not connected:', ...loose.map((t) => `- ${t.title}`));
+    return lines.join('\n') + '\n';
+  }
+  // Planflow is served over plain http on the home network, where navigator.clipboard does not
+  // exist (and where it does, it can still say no): fall back to a hidden textarea and execCommand.
+  async function copyText(text) {
+    let ok = false;
+    try { if (navigator.clipboard && window.isSecureContext) { await navigator.clipboard.writeText(text); ok = true; } } catch { /* try the old way */ }
+    if (!ok) {
+      const ta = h('textarea', { style: 'position:fixed;left:-9999px;top:0', readonly: '' }); ta.value = text;
+      document.body.append(ta); ta.select();
+      try { ok = document.execCommand('copy'); } catch { ok = false; }
+      ta.remove();
+    }
+    toast(ok ? `Copied ${text.split('\n').filter((l) => l.trim()).length} lines.` : 'Could not copy: the browser refused.');
   }
 
   // ---------------------------------------------------------------- undo
@@ -571,7 +931,7 @@
   async function createTask(x, y, opts = {}) {
     pendingCreate++;
     try {
-      const t = await api('POST', `/api/boards/${state.boardId}/tasks`, { title: opts.title || 'New task', notes: opts.notes || '', x: Math.round(x), y: Math.round(y) });
+      const t = await api('POST', `/api/boards/${state.boardId}/tasks`, { title: opts.title || M().fresh, notes: opts.notes || '', x: Math.round(x), y: Math.round(y) });
       state.tasks.set(t.id, t);
       const el = makeNode(t); nodesLayer.appendChild(el); nodeEls.set(t.id, el);
       renderProgress();
@@ -593,7 +953,7 @@
       const nt = await api('PATCH', `/api/tasks/${id}`, { status: done ? 'done' : 'todo', force });
       Object.assign(t, nt);
       refreshNodes();
-      if (done) {
+      if (done && modeId() === 'tasks') {
         const unlocked = dependentsOf(id).filter((d) => stateOf(d) === 'ready');
         if (unlocked.length) toast('Unlocked: ' + unlocked.map((d) => d.title).join(', '));
       }
@@ -630,15 +990,38 @@
   }
   async function addDep(from, to, opts = {}) {
     if (from === to) return;
-    if (state.deps.some((d) => d.from === from && d.to === to)) { toast('Already linked.'); return; }
-    if (reaches(to, from)) { toast("Can't link: that would make a loop."); return; }
+    const problem = linkProblem(from, to);
+    if (problem) { toast(problem); return; }
     try {
       const fromSide = opts.fromSide || 'right', toSide = opts.toSide || 'left';
-      const r = await api('POST', `/api/boards/${state.boardId}/deps`, { from, to, from_side: fromSide, to_side: toSide });
-      state.deps.push({ from, to, from_side: (r && r.from_side) || fromSide, to_side: (r && r.to_side) || toSide });
+      const r = await api('POST', `/api/boards/${state.boardId}/deps`, { from, to, from_side: fromSide, to_side: toSide, label: opts.label || null });
+      state.deps.push({ from, to, from_side: (r && r.from_side) || fromSide, to_side: (r && r.to_side) || toSide, label: (r && r.label) || null });
       refreshNodes();
-      if (!opts.quiet) toast(`"${titleOf(to)}" now waits for "${titleOf(from)}"`);
+      if (!opts.quiet) toast(M().linked(titleOf(from), titleOf(to)));
     } catch (e) { toast(e.message); }
+  }
+  // The words on a link: shown at once, saved a moment after the typing stops (and at once when
+  // the field loses focus, the selection moves or the page closes).
+  let pendingLabel = null, labelTimer;
+  function setDepLabel(d, text) {
+    if (pendingLabel && pendingLabel !== d) flushLabel();
+    d.label = String(text).replace(/\s+/g, ' ').trim().slice(0, 40) || null;
+    // On a workflow, words on an arrow make the card it leaves a decision (roleFrom): redraw that card first.
+    const src = nodeEls.get(d.from), srcTask = state.tasks.get(d.from);
+    if (src && srcTask) updateNode(src, srcTask);
+    renderEdges();
+    pendingLabel = d; clearTimeout(labelTimer); labelTimer = setTimeout(flushLabel, 500);
+  }
+  function flushLabel() {
+    clearTimeout(labelTimer);
+    if (!pendingLabel) return;
+    const d = pendingLabel; pendingLabel = null;
+    api('PATCH', `/api/deps/${d.from}/${d.to}`, { label: d.label || '' }).catch((e) => toast('Could not save the words on the link: ' + e.message));
+  }
+  function focusLabel() {
+    const inp = $('.label-input', panel); if (!inp) return;
+    if (isMobile()) panel.classList.add('open');
+    inp.focus(); inp.select();
   }
   async function setDepSides(d, patch) {
     try {
@@ -654,7 +1037,7 @@
       state.deps = state.deps.filter((x) => !(x.from === from && x.to === to));
       if (isSel('edge', { from, to })) state.selected = null;
       refreshNodes();
-      if (d) pushUndo({ label: `Unlinked "${titleOf(from)}" → "${titleOf(to)}"`, run: () => addDep(from, to, { fromSide: d.from_side, toSide: d.to_side, quiet: true }) });
+      if (d) pushUndo({ label: `Unlinked "${titleOf(from)}" → "${titleOf(to)}"`, run: () => addDep(from, to, { fromSide: d.from_side, toSide: d.to_side, label: d.label, quiet: true }) });
     } catch (e) { toast(e.message); }
   }
   // Delete key: links go at once (undoable); a task needs a second press, like the button.
@@ -764,7 +1147,12 @@
 
   // ---------------------------------------------------------------- auto arrange
   async function arrange() {
-    const tasks = [...state.tasks.values()]; if (!tasks.length) return;
+    const all = [...state.tasks.values()]; if (!all.length) return;
+    graphCache = null;
+    // On an ideas board the cards with no links are a pile, not a column: they are packed into a
+    // block under the linked ones (step 5). Everywhere else every card takes part in the columns.
+    const pile = modeId() === 'ideas' ? all.filter((t) => !insOf(t.id).length && !outsOf(t.id).length) : [];
+    const tasks = pile.length ? all.filter((t) => !pile.includes(t)) : all;
     // 1. Column = longest chain of blockers behind the task.
     const layer = new Map();
     const depth = (id, stack) => {
@@ -789,7 +1177,7 @@
       const u = items.get('t' + d.from), v = items.get('t' + d.to); if (!u || !v) continue;
       let prev = u;
       for (let c = u.col + 1; c < v.col; c++) prev = add({ key: 'l' + lanes++, lane: true, h: 0, col: c, preds: [prev.key] });
-      v.preds.push(prev.key);
+      if (u.col < v.col) v.preds.push(prev.key);   // an arrow that loops back (workflow, ideas) does not pull its target
     }
     // 3. Place column by column. Each item wants to sit level with the average centre of the
     //    items it follows (all in earlier columns); items are stacked in that order without
@@ -810,6 +1198,17 @@
     });
     const positions = [];
     for (const it of items.values()) if (it.task) positions.push({ id: it.task.id, x: X0 + it.col * (NODE_W + GAP_X), y: Math.round(it.y) });
+    // 5. The pile (ideas board): a block of columns, each card on the shortest column so far,
+    //    oldest first, so pictures of different heights pack without gaps.
+    if (pile.length) {
+      const top = positions.length ? Math.max(...[...items.values()].filter((it) => it.task).map((it) => it.y + it.h)) + 70 : Y0;
+      const bottoms = new Array(Math.min(pile.length, Math.max(3, Math.round(Math.sqrt(pile.length * 1.8))))).fill(top);
+      for (const t of pile.sort((a, b) => a.id - b.id)) {
+        const c = bottoms.indexOf(Math.min(...bottoms));
+        positions.push({ id: t.id, x: X0 + c * (NODE_W + 36), y: Math.round(bottoms[c]) });
+        bottoms[c] += hOf(t) + GAP_Y;
+      }
+    }
     // 4. Animate into place, then save.
     nodesLayer.classList.add('animate');
     for (const p of positions) {
@@ -935,7 +1334,7 @@
         gesture.cur = clientToWorld(e.clientX, e.clientY);
         const target = nodeAtPoint(e.clientX, e.clientY);
         const tid = target ? +target.dataset.id : null;
-        const ok = !!target && tid !== gesture.from && !reaches(tid, gesture.from) && !state.deps.some((d) => d.from === gesture.from && d.to === tid);
+        const ok = !!target && !linkProblem(gesture.from, tid);
         gesture.target = ok ? tid : null;
         gesture.targetSide = ok ? nearestSide(tid, gesture.cur) : null;
         renderEdges();
@@ -983,7 +1382,9 @@
   viewport.addEventListener('dblclick', (e) => {
     // Pointer capture makes the browser deliver this to the viewport, so look under the pointer, not at e.target.
     const under = document.elementFromPoint(e.clientX, e.clientY);
-    if (!under || under.closest('.edge-hit, #edgeUnlink, .check, .port') || under.isContentEditable) return;
+    const hit = under && under.closest('.edge-hit');
+    if (hit) { select({ type: 'edge', from: +hit.dataset.from, to: +hit.dataset.to }); focusLabel(); return; }   // double-click a link: write on it
+    if (!under || under.closest('#edgeUnlink, .check, .port') || under.isContentEditable) return;
     const nodeEl = under.closest('.node');
     if (nodeEl) { editTitle(+nodeEl.dataset.id); return; }   // double-click a card: rename it there
     const w = clientToWorld(e.clientX, e.clientY);
@@ -994,7 +1395,13 @@
     const id = +c.closest('.node').dataset.id, t = state.tasks.get(id);
     if (t) setDone(id, t.status !== 'done');
   });
-  edgeUnlink.addEventListener('click', () => { const s = state.selected; if (s && s.type === 'edge') deleteDep(s.from, s.to); });
+  // The Unlink button appears on the middle of a link the moment it is selected, so the second
+  // click of a double-click can land on it. That click means "write on it", not "unlink".
+  edgeUnlink.addEventListener('click', () => {
+    const s = state.selected; if (!s || s.type !== 'edge') return;
+    if (performance.now() - edgePickedAt < 450) { focusLabel(); return; }
+    deleteDep(s.from, s.to);
+  });
 
   // ---------------------------------------------------------------- context menu (right click / long press)
   const ctxMenu = h('div', { class: 'menu ctx', hidden: true });
@@ -1002,15 +1409,54 @@
   function hideCtx() { ctxMenu.hidden = true; }
   // An item with `arm: taskId` is a two-click delete: the first click relabels it "Really?".
   function showCtx(items, cx, cy) {
-    ctxMenu.replaceChildren(...items.map((it) => {
+    showMenuEls(items.map((it) => {
       if (it === '-') return h('div', { class: 'sep' });
       const btn = h('button', { class: it.danger ? 'danger' : '', disabled: !!it.disabled, title: it.title }, it.label);
       btn.addEventListener('click', () => { if (it.arm) { armedDelete(it.arm, btn, it.run || deleteTask); return; } hideCtx(); it.run(); });
       return btn;
-    }));
+    }), cx, cy);
+  }
+  // The menu with any elements in it, kept on screen. A menu opened by a click must survive that
+  // same click reaching the document (which closes menus): ctxOpenedNow is true until it has.
+  let ctxOpenedNow = false;
+  function showMenuEls(els, cx, cy) {
+    ctxMenu.replaceChildren(...els);
     ctxMenu.hidden = false;
     ctxMenu.style.left = Math.max(4, Math.min(cx, window.innerWidth - ctxMenu.offsetWidth - 4)) + 'px';
     ctxMenu.style.top = Math.max(4, Math.min(cy, window.innerHeight - ctxMenu.offsetHeight - 4)) + 'px';
+    ctxOpenedNow = true; setTimeout(() => { ctxOpenedNow = false; }, 0);
+  }
+
+  // ---------------------------------------------------------------- mode menu
+  // The four modes with a line about each: to say what a board is for (pickMode, from the top
+  // bar, the panel or the board menu) or what a new plan will be (newBoard).
+  function showModeMenu(at, title, current, onPick) {
+    const r = at.getBoundingClientRect();
+    showMenuEls([h('div', { class: 'menu-title' }, title), ...MODE_IDS.map((id) => h('button', { class: 'mode-item' + (id === current ? ' current' : ''), 'data-mode': id,
+      onclick: () => { hideCtx(); onPick(id); } },
+      h('span', { class: 'mode-ico' }, modeIcon(id)), h('span', { class: 'mi-name' }, MODES[id].label), h('span', { class: 'mi-now' }, id === current ? 'now' : ''),
+      h('span', { class: 'mi-about' }, MODES[id].about)))], r.left, r.bottom + 6);
+  }
+  function pickMode(at) { if (state.boardId && !state.home) showModeMenu(at, 'This board is for', modeId(), (id) => setMode(id)); }
+  // Switch what the open board is for. Nothing on the board changes, only how it is read, so the
+  // toast's Undo (or Ctrl+Z) is a switch back. A board whose links loop cannot become a tasks
+  // board or an outline: the server says which cards are in the circle and one of those links
+  // is selected so it can be unlinked.
+  async function setMode(mode, opts = {}) {
+    const was = modeId(); if (mode === was || !state.boardId) return;
+    flushSave(); flushLabel(); endEdit();
+    try {
+      const b = await api('PATCH', `/api/boards/${state.boardId}`, { mode });
+      state.board.mode = b.mode;
+      const listed = boardOf(state.boardId); if (listed) listed.mode = b.mode;
+      applyMode(); renderAll();
+      if (opts.quiet) toast(`Back to ${MODES[b.mode].label}.`);
+      else pushUndo({ label: `${MODES[b.mode].label} board now. ${MODES[b.mode].switched}`, run: () => setMode(was, { quiet: true }) });
+    } catch (e) {
+      toast(e.message, { ms: 9000 });
+      const loop = e.data && e.data.loop;
+      if (loop && loop.length > 1 && state.deps.some((d) => d.from === loop[0] && d.to === loop[1])) { select({ type: 'edge', from: loop[0], to: loop[1] }); centerOn(loop[0]); }
+    }
   }
   function cancelGesture() {
     if (!gesture) return;
@@ -1031,26 +1477,37 @@
     if (nodeEl) {
       const id = +nodeEl.dataset.id, t = state.tasks.get(id); if (!t) return;
       select({ type: 'task', id });
-      const st = stateOf(t);
+      const st = stateOf(t), m = modeId(), def = MODES[m];
       showCtx([
-        st === 'done' ? { label: 'Reopen', run: () => setDone(id, false) }
+        m === 'tasks' ? (st === 'done' ? { label: 'Reopen', run: () => setDone(id, false) }
           : st === 'blocked' ? { label: 'Mark done anyway', title: 'It still waits for unfinished tasks', run: () => setDone(id, true, true) }
-          : { label: 'Mark done', run: () => setDone(id, true) },
+          : { label: 'Mark done', run: () => setDone(id, true) })
+          : m === 'ideas' ? (st === 'done' ? { label: 'Untick', run: () => setDone(id, false) }
+            : { label: 'Tick off', title: 'Watched, bought, used: done with it. Nothing waits for a tick.', run: () => setDone(id, true) })
+          : null,
         { label: 'Rename', run: () => editTitle(id) },
-        { label: 'Add next step →', title: 'New task to the right that waits for this one', run: () => createTask(t.x + NODE_W + 90, t.y, { after: id }) },
+        { label: def.next, title: def.nextTitle, run: () => createTask(t.x + NODE_W + 90, t.y, { after: id }) },
         t.cover && t.cover.kind === 'link' ? { label: 'Open link ↗', run: () => window.open(t.cover.url, '_blank', 'noopener') } : null,
         t.cover ? { label: 'Remove cover', run: () => removeCover(id) } : null,
         '-',
-        { label: 'Delete task', danger: true, arm: id, title: 'Click twice. Can be undone with Ctrl+Z.' },
+        { label: `Delete ${def.one}`, danger: true, arm: id, title: 'Click twice. Can be undone with Ctrl+Z.' },
       ].filter(Boolean), e.clientX, e.clientY);
     } else if (hit) {
       const from = +hit.dataset.from, to = +hit.dataset.to;
       select({ type: 'edge', from, to });
-      showCtx([{ label: 'Unlink', danger: true, run: () => deleteDep(from, to) }], e.clientX, e.clientY);
+      const d = state.deps.find((x) => x.from === from && x.to === to);
+      const put = (text) => () => { if (d) { setDepLabel(d, text); flushLabel(); renderPanel(); } };
+      showCtx([
+        { label: d && d.label ? 'Change the words on it…' : 'Write on it…', run: focusLabel },
+        ...(modeId() === 'flow' ? [{ label: 'Yes', run: put('Yes') }, { label: 'No', run: put('No') }] : []),
+        d && d.label ? { label: 'Take the words off', run: put('') } : null,
+        '-',
+        { label: 'Unlink', danger: true, run: () => deleteDep(from, to) },
+      ].filter(Boolean), e.clientX, e.clientY);
     } else {
       const w = clientToWorld(e.clientX, e.clientY);
       showCtx([
-        { label: 'Add task here', run: () => createTask(w.x - NODE_W / 2, w.y - 24) },
+        { label: `Add ${MODES[modeId()].one} here`, run: () => createTask(w.x - NODE_W / 2, w.y - 24) },
         '-',
         { label: 'Arrange', run: arrange },
         { label: 'Fit view', run: () => fitView(true) },
@@ -1105,12 +1562,13 @@
   function goHome() { if (location.hash === '#/' || location.hash === '') { showHome(); } else location.hash = '#/'; }
   function goBoard(id) { const hh = '#/board/' + id; if (location.hash === hh) route(); else location.hash = hh; }
   async function openBoard(id, keepView = false) {
-    flushSave();
+    flushSave(); flushLabel();
     const data = await api('GET', `/api/boards/${id}`);
     if (state.boardId !== id) { undoStack.length = 0; disarm(); }
     leaveHome();
     document.title = data.board.name + ' · Planflow';
     state.boardId = id; state.board = data.board;
+    applyMode();
     state.tasks = new Map(data.tasks.map((t) => [t.id, t]));
     state.deps = data.deps;
     if (state.selected && state.selected.type === 'task' && !state.tasks.has(state.selected.id)) state.selected = null;
@@ -1122,9 +1580,14 @@
     const v = store.get('planflow.view.' + id);
     if (v && typeof v.s === 'number') { state.view = v; applyView(); } else fitView(false);
   }
-  async function newBoard() {
-    const name = prompt('Plan name', 'New project'); if (!name || !name.trim()) return;
-    try { const b = await api('POST', '/api/boards', { name: name.trim() }); await loadBoards(); goBoard(b.id); } catch (e) { toast(e.message); }
+  // A new plan starts with one question, what it is for (the mode menu, under `at` or under the
+  // button that makes plans), then its name.
+  function newBoard(at) {
+    showModeMenu(at && at.getBoundingClientRect ? at : $(state.home ? '#btnNewBoard' : '#btnBoardMenu'), 'What is the new plan for?', null, createBoard);
+  }
+  async function createBoard(mode) {
+    const name = prompt('Plan name', MODES[mode].boardName); if (!name || !name.trim()) return;
+    try { const b = await api('POST', '/api/boards', { name: name.trim(), mode }); await loadBoards(); goBoard(b.id); } catch (e) { toast(e.message); }
   }
   async function renameBoard(id = state.boardId) {
     const b = boardOf(id); if (!b) return;
@@ -1176,22 +1639,24 @@
     const act = btn.dataset.act;
     if (act === 'delete') {
       // The menu stays open, the item red, for the second click.
-      if (!armedDelete(boardArmId(), btn, deleteBoard)) toast(`Press Delete board again to delete "${state.board.name}" and its ${state.tasks.size} tasks. This cannot be undone.`, { ms: ARM_MS });
+      if (!armedDelete(boardArmId(), btn, deleteBoard)) toast(`Press Delete board again to delete "${state.board.name}" and its ${count(state.tasks.size, M())}. This cannot be undone.`, { ms: ARM_MS });
       return;
     }
     closeBoardMenu();
     if (act === 'new') newBoard(); else if (act === 'rename') renameBoard();
+    else if (act === 'mode') pickMode($('#btnBoardMenu'));
     else if (act === 'archive') archiveBoard(state.boardId).then(goHome);
   });
   document.addEventListener('click', (e) => {
     if (!e.target.closest('#boardMenu, #btnBoardMenu')) closeBoardMenu();
-    if (!e.target.closest('.menu.ctx')) hideCtx();
+    if (!ctxOpenedNow && !e.target.closest('.menu.ctx')) hideCtx();
     if (!e.target.closest('#archiveDrawer, #archiveBox')) closeDrawer();
   });
   window.addEventListener('resize', hideCtx);
 
   $('#btnAdd').addEventListener('click', addAtCenter);
-  $('#btnNewBoard').addEventListener('click', newBoard);
+  $('#btnNewBoard').addEventListener('click', () => newBoard());
+  $('#btnMode').addEventListener('click', (e) => pickMode(e.currentTarget));
   $('#btnArrange').addEventListener('click', arrange);
   $('#btnFit').addEventListener('click', () => fitView(true));
   $('#btnList').addEventListener('click', () => setListMode(!listMode));
@@ -1207,7 +1672,7 @@
     if (state.home) { renderHome().catch(() => {}); return; }
     if (state.boardId && !gesture && !editing) loadBoards().then(() => openBoard(state.boardId, true)).catch(() => {});
   });
-  window.addEventListener('beforeunload', flushSave);
+  window.addEventListener('beforeunload', () => { flushSave(); flushLabel(); });
 
   // ---------------------------------------------------------------- home page
   // All plans as cards, YouTube style: a coloured thumbnail with the plan's flow sketched on it,
@@ -1263,16 +1728,31 @@
         : side === 'bottom' ? { x: t.x + NODE_W / 2, y: t.y + hh } : { x: t.x + NODE_W, y: t.y + hh / 2 };
       return { ...p, dir };
     };
+    // Drawn the way the board itself reads its cards and links (updateNode, renderEdges), from
+    // what the overview sends: arrows and done / blocked boxes for tasks, leaning cards on dotted
+    // threads for ideas, filled top cards for an outline, pills and six-sided decisions for a flow.
+    const mode = modeOf(b), nin = new Map(), outs = new Map();
+    for (const d of b.deps) { if (!byId.has(d.from) || !byId.has(d.to)) continue; outs.set(d.from, (outs.get(d.from) || []).concat(d)); nin.set(d.to, (nin.get(d.to) || 0) + 1); }
     const blocked = new Set(b.deps.filter((d) => byId.get(d.from) && byId.get(d.from).status !== 'done').map((d) => d.to));
     for (const d of b.deps) {
       const a = byId.get(d.from), c = byId.get(d.to); if (!a || !c) continue;
-      svg.append(svgEl('path', { d: pathD(box(a, d.from_side || 'right'), box(c, d.to_side || 'left')), class: 'ml' + (a.status === 'done' ? ' done' : ''),
-        'stroke-width': sw, 'marker-end': `url(#${mid})` }));
+      const attrs = { d: pathD(box(a, d.from_side || 'right'), box(c, d.to_side || 'left')), class: 'ml' + (mode === 'tasks' && a.status === 'done' ? ' done' : ''), 'stroke-width': sw };
+      if (mode === 'tasks' || mode === 'flow') attrs['marker-end'] = `url(#${mid})`;
+      if (mode === 'ideas') { attrs['stroke-dasharray'] = `${1 / k} ${6 / k}`; attrs['stroke-linecap'] = 'round'; }
+      svg.append(svgEl('path', attrs));
     }
     for (const t of tasks) {
-      const st = t.status === 'done' ? 'done' : blocked.has(t.id) ? 'blocked' : 'ready';
-      const r = svgEl('rect', { x: t.x, y: t.y, width: NODE_W, height: hOf(t), rx: 5 / k, class: 'mn ' + st, 'stroke-width': sw });
+      const hh = hOf(t), out = outs.get(t.id) || [], inn = nin.get(t.id) || 0;
+      const st = mode === 'tasks' ? (t.status === 'done' ? 'done' : blocked.has(t.id) ? 'blocked' : 'ready')
+        : mode === 'ideas' ? (t.status === 'done' ? 'done' : 'idea')
+        : mode === 'plan' ? (out.length && !inn ? 'top' : 'point')
+        : roleFrom(t.title, inn, out);
+      const cut = 24, x2 = t.x + NODE_W, y2 = t.y + hh, ym = t.y + hh / 2;
+      const r = st === 'decision'
+        ? svgEl('polygon', { points: `${t.x + cut},${t.y} ${x2 - cut},${t.y} ${x2},${ym} ${x2 - cut},${y2} ${t.x + cut},${y2} ${t.x},${ym}`, class: 'mn decision', 'stroke-width': sw })
+        : svgEl('rect', { x: t.x, y: t.y, width: NODE_W, height: hh, rx: st === 'start' || st === 'end' ? Math.min(hh / 2, 26) : 5 / k, class: 'mn ' + st, 'stroke-width': sw });
       if (st === 'blocked') r.setAttribute('stroke-dasharray', `${6 / k} ${4 / k}`);
+      if (mode === 'ideas') r.setAttribute('transform', `rotate(${leanOf(t.id) * 2.5} ${t.x + NODE_W / 2} ${ym})`);
       svg.append(r);
     }
     return svg;
@@ -1290,12 +1770,21 @@
   function planCard(b) {
     const { bg, tilt } = planLook(b.id);
     const ready = b.tasks.filter((t) => t.status !== 'done' && !b.deps.some((d) => d.to === t.id && b.tasks.some((f) => f.id === d.from && f.status !== 'done'))).length;
-    const meta = b.total ? `${b.total} task${b.total === 1 ? '' : 's'} · ${ready} ready · edited ${relTime(b.updated_at || b.created_at)}` : `empty · made ${relTime(b.created_at)}`;
-    return h('article', { class: 'plan', 'data-id': b.id, style: `--tilt:${tilt}deg`, tabindex: 0, role: 'link', 'aria-label': 'Open ' + b.name },
+    // What kind of plan it is, and the one fact that matters for that kind, between the count and the date.
+    const mode = modeOf(b), def = MODES[mode], outs = new Map(), into = new Set();
+    for (const d of b.deps) { outs.set(d.from, (outs.get(d.from) || []).concat(d)); into.add(d.to); }
+    const tops = b.tasks.filter((t) => outs.get(t.id) && !into.has(t.id)).length;
+    const forks = mode === 'flow' ? b.tasks.filter((t) => roleFrom(t.title, into.has(t.id) ? 1 : 0, outs.get(t.id) || []) === 'decision').length : 0;
+    const fact = mode === 'tasks' ? `${ready} ready` : mode === 'ideas' ? (b.done ? `${b.done} ticked off` : '')
+      : mode === 'plan' ? (tops ? `${tops} at the top` : '') : (forks ? `${forks} decision${forks === 1 ? '' : 's'}` : '');
+    const meta = b.total ? [count(b.total, def), fact, `edited ${relTime(b.updated_at || b.created_at)}`].filter(Boolean).join(' · ') : `empty · made ${relTime(b.created_at)}`;
+    return h('article', { class: 'plan', 'data-id': b.id, 'data-mode': mode, style: `--tilt:${tilt}deg`, tabindex: 0, role: 'link', 'aria-label': `Open ${b.name} (${def.label})` },
       h('div', { class: 'thumb', style: 'background:' + bg }, miniFlow(b),
-        b.total ? h('span', { class: 'thumb-count' }, `${b.done} / ${b.total}`) : h('span', { class: 'thumb-empty' }, 'Empty plan')),
+        h('span', { class: 'thumb-mode', title: def.about }, modeIcon(mode), def.label),
+        b.total ? h('span', { class: 'thumb-count' }, mode === 'tasks' ? `${b.done} / ${b.total}` : count(b.total, def)) : h('span', { class: 'thumb-empty' }, 'Empty plan')),
       h('div', { class: 'plan-body' }, h('div', { class: 'plan-title' }, b.name), h('div', { class: 'plan-meta' }, meta),
-        h('div', { class: 'plan-bar' }, h('div', { class: 'fill', style: `width:${b.total ? b.done / b.total * 100 : 0}%` }))),
+        // only a tasks board has progress; the others keep the bar's space so every card is the same height
+        h('div', { class: 'plan-bar' + (mode === 'tasks' ? '' : ' none') }, h('div', { class: 'fill', style: `width:${b.total ? b.done / b.total * 100 : 0}%` }))),
       h('button', { class: 'icon plan-menu', title: 'Plan options', 'aria-label': 'Plan options',
         onclick: (e) => { e.stopPropagation(); planMenu(b, e.clientX, e.clientY); } }, '⋯'));
   }
@@ -1332,13 +1821,13 @@
     $('#homeCount').textContent = `${live.length} plan${live.length === 1 ? '' : 's'}` + (archived.length ? ` · ${archived.length} archived` : '');
     homeCards = live.map((b) => ({ b, el: planCard(b) }));
     planGrid.replaceChildren(...(live.length ? homeCards.map((c) => c.el)
-      : [h('div', { class: 'home-empty' }, h('div', {}, archived.length ? 'Every plan is in the archive box.' : 'No plans yet. A plan is a board of tasks that wait for each other.'),
-          h('button', { class: 'primary', onclick: newBoard }, '+ New plan'))]));
+      : [h('div', { class: 'home-empty' }, h('div', {}, archived.length ? 'Every plan is in the archive box.' : 'No plans yet. A plan is a board of cards: things to do in order, a pile of ideas, an outline or a workflow.'),
+          h('button', { class: 'primary', onclick: (e) => newBoard(e.currentTarget) }, '+ New plan'))]));
     layoutHome();
     const cnt = $('.archive-count', archiveBox); cnt.textContent = archived.length; cnt.hidden = !archived.length;
     archiveDrawer.replaceChildren(h('h4', {}, `Archived (${archived.length})`),
       archived.length ? h('ul', {}, archived.map((b) => h('li', {},
-          h('span', { class: 't' }, b.name, h('span', { class: 'small muted' }, ` · ${b.total} task${b.total === 1 ? '' : 's'}`)),
+          h('span', { class: 't' }, b.name, h('span', { class: 'small muted' }, ` · ${count(b.total, MODES[modeOf(b)])}`)),
           h('button', { onclick: () => archiveBoard(b.id, false) }, 'Restore'),
           h('button', { class: 'danger', 'data-label': 'Delete', title: 'Click twice. Gone for good.',
             onclick: (e) => armedDelete('board:' + b.id, e.currentTarget, () => deletePlan(b.id).catch((err) => toast(err.message))) }, 'Delete'))))

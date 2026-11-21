@@ -1,5 +1,7 @@
 'use strict';
-// Planflow — dependency-aware todo board. node:http for the server, PostgreSQL (db.js) for the data.
+// Planflow — cards and links on a canvas. A board is a to-do board whose tasks wait for each other,
+// a pile of ideas, an outline or a workflow (its mode, see MODES). node:http for the server,
+// PostgreSQL (db.js) for the data.
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -16,11 +18,24 @@ const TRASH_DAYS = 7;                // deleted tasks can be restored for this l
 const MAX_ID = 2147483647;           // ids are Postgres INTEGER
 const UA = 'Mozilla/5.0 (compatible; Planflow/1.0; +https://github.com/IORD1/planflow)';
 
+// What a board is for. The mode changes what the same rows mean, never the rows themselves, so a
+// board can be switched back and forth without losing anything:
+//   tasks  a link A -> B means "B waits for A"; a task cannot be finished before its blockers,
+//          and the links may not form a loop.
+//   ideas  a link only says two cards go together; status 'done' is a tick (watched, bought, used)
+//          that nothing waits for. Loops are fine.
+//   plan   an outline: a link A -> B means "B is a part of A". No ticks. No loops, or the outline
+//          would never end.
+//   flow   a workflow: a link A -> B means "after A comes B". No ticks. Loops are allowed (retry).
+const MODES = { tasks: 'Tasks', ideas: 'Ideas', plan: 'Planning', flow: 'Workflow' };
+const NO_LOOPS = new Set(['tasks', 'plan']);
+const MAX_LABEL = 40;                // characters written on an arrow
+
 // ---------------------------------------------------------------- queries
 const { all, one, run, tx } = db;
 
 const BOARD_SUMMARY = `
-  SELECT b.id, b.name, b.created_at, b.archived_at, b.home_x, b.home_y,
+  SELECT b.id, b.name, b.mode, b.created_at, b.archived_at, b.home_x, b.home_y,
          (SELECT COUNT(*)::int FROM tasks t WHERE t.board_id = b.id AND t.deleted_at IS NULL) AS total,
          (SELECT COUNT(*)::int FROM tasks t WHERE t.board_id = b.id AND t.deleted_at IS NULL AND t.status = 'done') AS done,
          (SELECT MAX(t.updated_at) FROM tasks t WHERE t.board_id = b.id AND t.deleted_at IS NULL) AS updated_at
@@ -37,8 +52,9 @@ const TASK_SELECT = `
 const q = {
   boards: () => all(`${BOARD_SUMMARY} ORDER BY b.id`),
   boardSummary: (id) => one(`${BOARD_SUMMARY} WHERE b.id = $1`, [id]),
-  board: (id) => one('SELECT id, name, created_at FROM boards WHERE id = $1', [id]),
-  insertBoard: async (name) => (await one('INSERT INTO boards (name) VALUES ($1) RETURNING id', [name])).id,
+  board: (id) => one('SELECT id, name, mode, created_at FROM boards WHERE id = $1', [id]),
+  insertBoard: async (name, mode = 'tasks') => (await one('INSERT INTO boards (name, mode) VALUES ($1, $2) RETURNING id', [name, mode])).id,
+  setBoardMode: (mode, id) => run('UPDATE boards SET mode = $1 WHERE id = $2', [mode, id]),
   renameBoard: (name, id) => run('UPDATE boards SET name = $1 WHERE id = $2', [name, id]),
   deleteBoard: (id) => run('DELETE FROM boards WHERE id = $1', [id]),
   // Archive = hide from the board list and park the card in the home page's archive box; unarchive clears it.
@@ -46,17 +62,18 @@ const q = {
   setBoardArchived: (on, id) => run(
     'UPDATE boards SET archived_at = CASE WHEN $1 THEN COALESCE(archived_at, now()) ELSE NULL END WHERE id = $2', [on, id]),
   // For the thumbnails on the home page: every live task's spot and state, and every live link, all boards at once.
+  // Titles and labels come along because a workflow's sketch needs them to tell a decision from a step.
   overviewTasks: () => all(`
-    SELECT t.id, t.board_id, t.x, t.y, t.status, (c.task_id IS NOT NULL) AS cover
+    SELECT t.id, t.board_id, t.title, t.x, t.y, t.status, (c.task_id IS NOT NULL) AS cover
     FROM tasks t LEFT JOIN covers c ON c.task_id = t.id WHERE t.deleted_at IS NULL ORDER BY t.id`),
   overviewDeps: () => all(`
-    SELECT d.board_id, d.from_id AS "from", d.to_id AS "to", d.from_side, d.to_side
+    SELECT d.board_id, d.from_id AS "from", d.to_id AS "to", d.from_side, d.to_side, d.label
     FROM deps d JOIN tasks a ON a.id = d.from_id JOIN tasks b ON b.id = d.to_id
     WHERE a.deleted_at IS NULL AND b.deleted_at IS NULL`),
   tasksOfBoard: (boardId) => all(`${TASK_SELECT} WHERE t.board_id = $1 AND t.deleted_at IS NULL ORDER BY t.id`, [boardId]),
   // Links between two live tasks only: a deleted task's links wait in the trash with it.
   depsOfBoard: (boardId) => all(`
-    SELECT d.from_id AS "from", d.to_id AS "to", d.from_side, d.to_side
+    SELECT d.from_id AS "from", d.to_id AS "to", d.from_side, d.to_side, d.label
     FROM deps d JOIN tasks a ON a.id = d.from_id JOIN tasks b ON b.id = d.to_id
     WHERE d.board_id = $1 AND a.deleted_at IS NULL AND b.deleted_at IS NULL
     ORDER BY d.from_id, d.to_id`, [boardId]),
@@ -78,13 +95,13 @@ const q = {
   unfinishedBlockers: async (id) => (await one(`
     SELECT COUNT(*)::int AS n FROM deps d JOIN tasks t ON t.id = d.from_id
     WHERE d.to_id = $1 AND t.status <> 'done' AND t.deleted_at IS NULL`, [id])).n,
-  insertDep: (boardId, from, to, fromSide = 'right', toSide = 'left') => run(
-    'INSERT INTO deps (board_id, from_id, to_id, from_side, to_side) VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING',
-    [boardId, from, to, fromSide, toSide]),
+  insertDep: (boardId, from, to, fromSide = 'right', toSide = 'left', label = null) => run(
+    'INSERT INTO deps (board_id, from_id, to_id, from_side, to_side, label) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING',
+    [boardId, from, to, fromSide, toSide, label]),
   dep: (from, to) => one(
-    'SELECT from_id AS "from", to_id AS "to", from_side, to_side FROM deps WHERE from_id = $1 AND to_id = $2', [from, to]),
-  updateDepSides: (from, to, fromSide, toSide) => run(
-    'UPDATE deps SET from_side = $3, to_side = $4 WHERE from_id = $1 AND to_id = $2', [from, to, fromSide, toSide]),
+    'SELECT from_id AS "from", to_id AS "to", from_side, to_side, label FROM deps WHERE from_id = $1 AND to_id = $2', [from, to]),
+  updateDep: (from, to, fromSide, toSide, label) => run(
+    'UPDATE deps SET from_side = $3, to_side = $4, label = $5 WHERE from_id = $1 AND to_id = $2', [from, to, fromSide, toSide, label]),
   deleteDep: (from, to) => run('DELETE FROM deps WHERE from_id = $1 AND to_id = $2', [from, to]),
   depExists: async (from, to) => Boolean(await one('SELECT 1 FROM deps WHERE from_id = $1 AND to_id = $2', [from, to])),
   setCover: (taskId, c) => run(`
@@ -130,6 +147,30 @@ function cycleIn(deps, from, to) {
   return false;
 }
 const wouldCycle = async (boardId, from, to) => cycleIn(await q.depsOfBoard(boardId), from, to);
+// One loop in `deps` as the ids along it (the first one again at the end), or null when there is
+// none. Asked when a board is switched to a mode that cannot have loops.
+function findLoop(deps) {
+  const next = new Map();
+  for (const d of deps) {
+    if (!next.has(d.from)) next.set(d.from, []);
+    next.get(d.from).push(d.to);
+  }
+  const mark = new Map();            // id -> 1 while it is on the path being walked, 2 once finished
+  for (const start of next.keys()) {
+    if (mark.get(start)) continue;
+    const path = [start], at = [0];
+    mark.set(start, 1);
+    while (path.length) {
+      const cur = path[path.length - 1], kids = next.get(cur) || [];
+      const i = at[at.length - 1]++;
+      if (i >= kids.length) { mark.set(cur, 2); path.pop(); at.pop(); continue; }
+      const n = kids[i];
+      if (mark.get(n) === 1) return path.slice(path.indexOf(n)).concat(n);
+      if (!mark.get(n)) { mark.set(n, 1); path.push(n); at.push(0); }
+    }
+  }
+  return null;
+}
 
 async function seedIfEmpty() {
   if ((await q.boards()).length) return;
@@ -145,7 +186,8 @@ async function seedIfEmpty() {
 
 // ---------------------------------------------------------------- helpers
 class HttpError extends Error {
-  constructor(status, message) { super(message); this.status = status; }
+  // `extra` is added to the JSON answer next to `error` (e.g. the ids of a loop).
+  constructor(status, message, extra) { super(message); this.status = status; this.extra = extra; }
 }
 // A handler returns one of these to answer with something other than JSON (the cover picture).
 class Raw {
@@ -163,6 +205,19 @@ function cleanSide(v, fallback) {
   if (v === undefined || v === null) return fallback;
   if (typeof v !== 'string' || !SIDES.has(v)) bad('a side must be left, right, top or bottom');
   return v;
+}
+function cleanMode(v) {
+  if (typeof v !== 'string' || !Object.hasOwn(MODES, v)) bad('mode must be tasks, ideas, plan or flow');
+  return v;
+}
+// The words on an arrow. '' or null takes them off; undefined means "keep the default / current value".
+function cleanLabel(v, fallback) {
+  if (v === undefined) return fallback;
+  if (v === null) return null;
+  if (typeof v !== 'string') bad('label must be a string');
+  const t = v.replace(/\s+/g, ' ').trim();
+  if (t.length > MAX_LABEL) bad(`label too long (${MAX_LABEL} characters at most)`);
+  return t || null;
 }
 const cleanTitle = (v) => {
   if (typeof v !== 'string') bad('title must be a string');
@@ -345,7 +400,8 @@ route('GET', '/api/boards', () => q.boards());
 
 route('POST', '/api/boards', async ({ body }) => {
   const name = cleanTitle(body.name ?? 'Untitled board');
-  const id = await q.insertBoard(name);
+  const mode = body.mode === undefined ? 'tasks' : cleanMode(body.mode);
+  const id = await q.insertBoard(name, mode);
   return [201, await q.boardSummary(id)];
 });
 
@@ -356,19 +412,29 @@ route('GET', '/api/boards/:id', async ({ params }) => {
 });
 
 // {name} renames, {archived: true|false} moves the board into or out of the home page's archive,
-// {home_x, home_y} is where its card was dropped on the home page (null, null: back to automatic).
+// {home_x, home_y} is where its card was dropped on the home page (null, null: back to automatic),
+// {mode} changes what the board is for (MODES). Everything is checked before anything is saved.
 route('PATCH', '/api/boards/:id', async ({ params, body }) => {
   const board = (await q.board(params.id)) || notFound('board');
-  if (body.name !== undefined) await q.renameBoard(cleanTitle(body.name), board.id);
-  if (body.home_x !== undefined || body.home_y !== undefined) {
-    const x = body.home_x, y = body.home_y;
-    if (!((x === null && y === null) || (isNum(x) && isNum(y)))) bad('home_x and home_y must both be numbers, or both null');
-    await q.setBoardHome(x, y, board.id);
+  const name = body.name !== undefined ? cleanTitle(body.name) : null;
+  const mode = body.mode !== undefined ? cleanMode(body.mode) : null;
+  if (mode && mode !== board.mode && NO_LOOPS.has(mode)) {
+    // Ideas and workflows may loop; a to-do board or an outline may not. Say which cards are in the way.
+    const loop = findLoop(await q.depsOfBoard(board.id));
+    if (loop) {
+      const title = new Map((await q.tasksOfBoard(board.id)).map((t) => [t.id, t.title]));
+      const names = loop.slice(0, 4).map((id) => `"${trunc(title.get(id), 40)}"`).join(' → ') + (loop.length > 4 ? ' → …' : '');
+      throw new HttpError(409, `${MODES[mode]} cannot have a loop, and these cards link in a circle: ${names}. Unlink one of them first.`, { loop });
+    }
   }
-  if (body.archived !== undefined) {
-    if (typeof body.archived !== 'boolean') bad('archived must be true or false');
-    await q.setBoardArchived(body.archived, board.id);
-  }
+  const moved = body.home_x !== undefined || body.home_y !== undefined;
+  const x = body.home_x, y = body.home_y;
+  if (moved && !((x === null && y === null) || (isNum(x) && isNum(y)))) bad('home_x and home_y must both be numbers, or both null');
+  if (body.archived !== undefined && typeof body.archived !== 'boolean') bad('archived must be true or false');
+  if (name !== null) await q.renameBoard(name, board.id);
+  if (mode) await q.setBoardMode(mode, board.id);
+  if (moved) await q.setBoardHome(x, y, board.id);
+  if (body.archived !== undefined) await q.setBoardArchived(body.archived, board.id);
   return q.boardSummary(board.id);
 });
 
@@ -377,8 +443,8 @@ route('PATCH', '/api/boards/:id', async ({ params, body }) => {
 route('GET', '/api/overview', async () => {
   const [boards, tasks, deps] = await Promise.all([q.boards(), q.overviewTasks(), q.overviewDeps()]);
   const by = new Map(boards.map((b) => [b.id, { ...b, tasks: [], deps: [] }]));
-  for (const t of tasks) by.get(t.board_id)?.tasks.push({ id: t.id, x: t.x, y: t.y, status: t.status, cover: t.cover });
-  for (const d of deps) by.get(d.board_id)?.deps.push({ from: d.from, to: d.to, from_side: d.from_side, to_side: d.to_side });
+  for (const t of tasks) by.get(t.board_id)?.tasks.push({ id: t.id, title: t.title, x: t.x, y: t.y, status: t.status, cover: t.cover });
+  for (const d of deps) by.get(d.board_id)?.deps.push({ from: d.from, to: d.to, from_side: d.from_side, to_side: d.to_side, label: d.label });
   return { boards: [...by.values()] };
 });
 
@@ -422,7 +488,8 @@ route('PATCH', '/api/tasks/:id', async ({ params, body }) => {
   let status = t.status;
   if (body.status !== undefined) {
     if (body.status !== 'todo' && body.status !== 'done') bad("status must be 'todo' or 'done'");
-    if (body.status === 'done' && t.status !== 'done' && body.force !== true) {
+    // Only a tasks board has blockers; on an ideas board 'done' is a tick that nothing waits for.
+    if (body.status === 'done' && t.status !== 'done' && body.force !== true && (await q.board(t.board_id)).mode === 'tasks') {
       const n = await q.unfinishedBlockers(t.id);
       if (n > 0) throw new HttpError(409, `blocked by ${n} unfinished task${n === 1 ? '' : 's'}`);
     }
@@ -440,16 +507,19 @@ route('DELETE', '/api/tasks/:id', async ({ params }) => {
   return [204];
 });
 
-// Undo a delete. Links to other live tasks come back with it, except any that would now form a
-// loop (possible if links were added while the task was in the trash); those are dropped.
+// Undo a delete. Links to other live tasks come back with it, except, on a board that cannot
+// have loops, any that would now form one (possible if links were added while the task was in
+// the trash); those are dropped.
 route('POST', '/api/tasks/:id/restore', async ({ params }) => {
   const t = await q.taskAny(params.id);
   if (!t || !t.deleted_at) notFound('deleted task');
   await q.restoreTask(t.id);
   const deps = await q.depsOfBoard(t.board_id);
+  const mine = deps.filter((d) => d.from === t.id || d.to === t.id);
+  if (!NO_LOOPS.has((await q.board(t.board_id)).mode)) return { task: taskOut(await q.task(t.id)), deps: mine };
   const others = deps.filter((d) => d.from !== t.id && d.to !== t.id);
   const kept = [];
-  for (const d of deps.filter((d) => d.from === t.id || d.to === t.id)) {
+  for (const d of mine) {
     if (cycleIn(others.concat(kept), d.from, d.to)) await q.deleteDep(d.from, d.to);
     else kept.push(d);
   }
@@ -495,21 +565,24 @@ route('POST', '/api/boards/:id/deps', async ({ params, body }) => {
   if (!isId(from) || !isId(to)) bad('from and to must be task ids');
   if (from === to) bad('a task cannot block itself');
   const fromSide = cleanSide(body.from_side, 'right'), toSide = cleanSide(body.to_side, 'left');
+  const label = cleanLabel(body.label, null);
   const [tf, tt] = await Promise.all([q.task(from), q.task(to)]);
   if (!tf || !tt || tf.board_id !== board.id || tt.board_id !== board.id) notFound('task');
   const existing = await q.dep(from, to);
   if (existing) return { ...existing, existed: true };
-  if (await wouldCycle(board.id, from, to)) throw new HttpError(409, 'that link would create a cycle');
-  await q.insertDep(board.id, from, to, fromSide, toSide);
-  return [201, { from, to, from_side: fromSide, to_side: toSide }];
+  // A workflow may loop back (retry) and ideas may link in a circle; tasks and outlines may not.
+  if (NO_LOOPS.has(board.mode) && await wouldCycle(board.id, from, to)) throw new HttpError(409, 'that link would create a cycle');
+  await q.insertDep(board.id, from, to, fromSide, toSide, label);
+  return [201, { from, to, from_side: fromSide, to_side: toSide, label }];
 });
 
-// Move an arrow to other sides of its cards (the link itself stays the same).
+// Move an arrow to other sides of its cards, or change the words on it (the link itself stays the same).
 route('PATCH', '/api/deps/:from/:to', async ({ params, body }) => {
   const dep = (await q.dep(params.from, params.to)) || notFound('link');
   const fromSide = cleanSide(body.from_side, dep.from_side), toSide = cleanSide(body.to_side, dep.to_side);
-  await q.updateDepSides(dep.from, dep.to, fromSide, toSide);
-  return { from: dep.from, to: dep.to, from_side: fromSide, to_side: toSide };
+  const label = cleanLabel(body.label, dep.label);
+  await q.updateDep(dep.from, dep.to, fromSide, toSide, label);
+  return { from: dep.from, to: dep.to, from_side: fromSide, to_side: toSide, label };
 });
 
 route('DELETE', '/api/deps/:from/:to', async ({ params }) => {
@@ -570,7 +643,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method !== 'GET' && req.method !== 'HEAD') { send(res, 405, { error: 'method not allowed' }); return; }
     serveStatic(req, res, decodeURIComponent(url.pathname));
   } catch (e) {
-    if (e instanceof HttpError) send(res, e.status, { error: e.message });
+    if (e instanceof HttpError) send(res, e.status, { error: e.message, ...e.extra });
     else { console.error(e); send(res, 500, { error: 'internal error' }); }
   }
 });

@@ -3,7 +3,7 @@
 // keeps the shell on the phone. The API (boards, tasks, cover images) is never cached: live
 // data. Everything else on this origin is network first, so a deploy shows on the next
 // load, with the cached copy as the fallback when the server is away.
-const CACHE = 'planflow-shell-v2';
+const CACHE = 'planflow-shell-v3';
 const SHELL = ['/', '/index.html', '/app.js', '/style.css', '/manifest.webmanifest', '/icons/icon-192.png', '/icons/icon-512.png'];
 const NEVER = (url) => url.pathname.startsWith('/api');
 

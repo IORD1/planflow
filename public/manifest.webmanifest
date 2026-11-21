@@ -1,7 +1,7 @@
 {
   "name": "Planflow",
   "short_name": "Planflow",
-  "description": "A todo board where a link means the second task waits for the first",
+  "description": "Cards and links on a canvas: tasks that wait for each other, piles of ideas, outlines and workflows",
   "id": "/",
   "start_url": "/",
   "scope": "/",

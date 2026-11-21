@@ -1,4 +1,5 @@
-// API test: link sides, trash/restore, covers. Run against a LOCAL server on a throwaway database:
+// API test: link sides, trash/restore, covers, the archive, board modes and link labels.
+// Run against a LOCAL server on a throwaway database:
 //   PLANFLOW_URL=http://localhost:8093 node scripts/api-test.mjs
 import assert from 'node:assert/strict';
 const B = process.env.PLANFLOW_URL || 'http://localhost:8093';
@@ -11,24 +12,24 @@ const board = (await call('POST', '/api/boards', { name: 'sides-test' })).data;
 const mk = async (title, x, y) => (await call('POST', `/api/boards/${board.id}/tasks`, { title, x, y })).data;
 const A = await mk('A', 0, 0), Bt = await mk('B', 300, 0), C = await mk('C', 0, 300);
 let r = await call('POST', `/api/boards/${board.id}/deps`, { from: A.id, to: Bt.id });
-assert.equal(r.status, 201); assert.deepEqual(r.data, { from: A.id, to: Bt.id, from_side: 'right', to_side: 'left' }); console.log('ok default sides right→left');
+assert.equal(r.status, 201); assert.deepEqual(r.data, { from: A.id, to: Bt.id, from_side: 'right', to_side: 'left', label: null }); console.log('ok default sides right→left');
 r = await call('POST', `/api/boards/${board.id}/deps`, { from: A.id, to: C.id, from_side: 'bottom', to_side: 'top' });
-assert.equal(r.status, 201); assert.deepEqual(r.data, { from: A.id, to: C.id, from_side: 'bottom', to_side: 'top' }); console.log('ok explicit sides bottom→top');
+assert.equal(r.status, 201); assert.deepEqual(r.data, { from: A.id, to: C.id, from_side: 'bottom', to_side: 'top', label: null }); console.log('ok explicit sides bottom→top');
 r = await call('POST', `/api/boards/${board.id}/deps`, { from: Bt.id, to: C.id, from_side: 'diagonal' });
 assert.equal(r.status, 400); assert.match(r.data.error, /left, right, top or bottom/); console.log('ok bad side rejected:', r.data.error);
 r = await call('POST', `/api/boards/${board.id}/deps`, { from: Bt.id, to: C.id, to_side: 42 });
 assert.equal(r.status, 400); console.log('ok non-string side rejected');
 r = await call('GET', `/api/boards/${board.id}`);
 const deps = r.data.deps.sort((p, q) => p.to - q.to);
-assert.deepEqual(deps, [{ from: A.id, to: Bt.id, from_side: 'right', to_side: 'left' }, { from: A.id, to: C.id, from_side: 'bottom', to_side: 'top' }]); console.log('ok GET board returns sides');
+assert.deepEqual(deps, [{ from: A.id, to: Bt.id, from_side: 'right', to_side: 'left', label: null }, { from: A.id, to: C.id, from_side: 'bottom', to_side: 'top', label: null }]); console.log('ok GET board returns sides');
 r = await call('PATCH', `/api/deps/${A.id}/${C.id}`, { to_side: 'right' });
-assert.equal(r.status, 200); assert.deepEqual(r.data, { from: A.id, to: C.id, from_side: 'bottom', to_side: 'right' }); console.log('ok PATCH one side keeps the other');
+assert.equal(r.status, 200); assert.deepEqual(r.data, { from: A.id, to: C.id, from_side: 'bottom', to_side: 'right', label: null }); console.log('ok PATCH one side keeps the other');
 r = await call('PATCH', `/api/deps/${A.id}/${C.id}`, { from_side: 'left', to_side: 'bottom' });
-assert.deepEqual(r.data, { from: A.id, to: C.id, from_side: 'left', to_side: 'bottom' }); console.log('ok PATCH both sides');
+assert.deepEqual(r.data, { from: A.id, to: C.id, from_side: 'left', to_side: 'bottom', label: null }); console.log('ok PATCH both sides');
 r = await call('PATCH', `/api/deps/${A.id}/${C.id}`, { from_side: 'up' }); assert.equal(r.status, 400); console.log('ok PATCH bad side 400');
 r = await call('PATCH', `/api/deps/${Bt.id}/${C.id}`, { from_side: 'top' }); assert.equal(r.status, 404); console.log('ok PATCH missing link 404');
 r = await call('POST', `/api/boards/${board.id}/deps`, { from: A.id, to: Bt.id, from_side: 'top' });
-assert.equal(r.status, 200); assert.deepEqual(r.data, { from: A.id, to: Bt.id, from_side: 'right', to_side: 'left', existed: true }); console.log('ok re-adding keeps stored sides, existed:true');
+assert.equal(r.status, 200); assert.deepEqual(r.data, { from: A.id, to: Bt.id, from_side: 'right', to_side: 'left', label: null, existed: true }); console.log('ok re-adding keeps stored sides, existed:true');
 r = await call('POST', `/api/boards/${board.id}/deps`, { from: Bt.id, to: A.id, from_side: 'left', to_side: 'right' }); assert.equal(r.status, 409); console.log('ok cycle still refused');
 r = await call('GET', `/api/boards/${board.id}`); assert.equal(r.data.deps.length, 2);
 await call('DELETE', `/api/deps/${A.id}/${C.id}`);
@@ -102,7 +103,6 @@ r = await call('GET', `/api/boards/${board.id}`); assert.equal(r.data.deps.lengt
 }
 
 await call('DELETE', `/api/boards/${board.id}`);
-console.log('API TESTS PASSED');
 
 // --- archive (PATCH {archived}) and the home page's overview
 {
@@ -112,7 +112,7 @@ console.log('API TESTS PASSED');
   const t2 = (await call('POST', `/api/boards/${b2.id}/tasks`, { title: 'two', x: 300, y: 0 })).data;
   await call('POST', `/api/boards/${b2.id}/deps`, { from: t1.id, to: t2.id });
   let o = (await call('GET', '/api/overview')).data.boards.find((x) => x.id === b2.id);
-  assert.equal(o.total, 2); assert.equal(o.tasks.length, 2); assert.deepEqual(o.deps, [{ from: t1.id, to: t2.id, from_side: 'right', to_side: 'left' }]);
+  assert.equal(o.total, 2); assert.equal(o.tasks.length, 2); assert.deepEqual(o.deps, [{ from: t1.id, to: t2.id, from_side: 'right', to_side: 'left', label: null }]); assert.equal(o.tasks[0].title, 'one');
   assert.equal(o.tasks[0].cover, false); assert.ok(o.updated_at); console.log('ok overview lists tasks, links, counts');
   r = await call('PATCH', `/api/boards/${b2.id}`, { archived: 'yes' }); assert.equal(r.status, 400); console.log('ok archived must be boolean');
   r = await call('PATCH', `/api/boards/${b2.id}`, { archived: true }); assert.equal(r.status, 200); assert.ok(r.data.archived_at); assert.equal(r.data.total, 2); console.log('ok archive sets archived_at');
@@ -129,3 +129,58 @@ console.log('API TESTS PASSED');
   await call('DELETE', `/api/boards/${b2.id}`);
   assert.equal((await call('GET', '/api/overview')).data.boards.some((x) => x.id === b2.id), false); console.log('ok deleted board gone from overview');
 }
+
+// --- modes: what a board is for (tasks, ideas, plan, flow), and the words on an arrow
+{
+  const made = [];
+  const mkBoard = async (body) => { const x = await call('POST', '/api/boards', body); if (x.status === 201) made.push(x.data.id); return x; };
+  r = await mkBoard({ name: 'mode-default' }); assert.equal(r.data.mode, 'tasks'); console.log('ok a new board is a tasks board unless told otherwise');
+  r = await mkBoard({ name: 'mode-bad', mode: 'kanban' }); assert.equal(r.status, 400); assert.match(r.data.error, /tasks, ideas, plan or flow/); console.log('ok unknown mode refused:', r.data.error);
+  const flow = (await mkBoard({ name: 'mode-flow', mode: 'flow' })).data; assert.equal(flow.mode, 'flow');
+  assert.equal((await call('GET', `/api/boards/${flow.id}`)).data.board.mode, 'flow');
+  assert.equal((await call('GET', '/api/boards')).data.find((x) => x.id === flow.id).mode, 'flow');
+  assert.equal((await call('GET', '/api/overview')).data.boards.find((x) => x.id === flow.id).mode, 'flow'); console.log('ok the mode is on the board, the board list and the overview');
+  const card = async (title, x) => (await call('POST', `/api/boards/${flow.id}/tasks`, { title, x, y: 0 })).data;
+  const S = await card('Pay', 0), Q = await card('Did it go through?', 300), R = await card('Try again', 600);
+  const link = (body) => call('POST', `/api/boards/${flow.id}/deps`, body);
+
+  // labels
+  r = await link({ from: S.id, to: Q.id }); assert.equal(r.data.label, null);
+  r = await link({ from: Q.id, to: R.id, label: '  No,   again ' }); assert.equal(r.status, 201); assert.equal(r.data.label, 'No, again'); console.log('ok a link can be made with a label (trimmed, spaces squeezed)');
+  r = await link({ from: R.id, to: S.id, label: 'x'.repeat(41) }); assert.equal(r.status, 400); assert.match(r.data.error, /too long/);
+  r = await link({ from: R.id, to: S.id, label: 7 }); assert.equal(r.status, 400); console.log('ok a label must be a string of at most 40 characters');
+  r = await call('PATCH', `/api/deps/${S.id}/${Q.id}`, { label: 'then' }); assert.deepEqual(r.data, { from: S.id, to: Q.id, from_side: 'right', to_side: 'left', label: 'then' });
+  r = await call('PATCH', `/api/deps/${S.id}/${Q.id}`, { to_side: 'top' }); assert.equal(r.data.label, 'then'); assert.equal(r.data.to_side, 'top'); console.log('ok PATCH label keeps the sides, PATCH a side keeps the label');
+  r = await call('PATCH', `/api/deps/${S.id}/${Q.id}`, { label: '   ' }); assert.equal(r.data.label, null);
+  await call('PATCH', `/api/deps/${S.id}/${Q.id}`, { label: 'then' });
+  r = await call('PATCH', `/api/deps/${S.id}/${Q.id}`, { label: null }); assert.equal(r.data.label, null); console.log('ok an empty label or null takes the words off');
+  assert.equal((await call('GET', `/api/boards/${flow.id}`)).data.deps.find((d) => d.from === Q.id).label, 'No, again'); console.log('ok GET board returns the labels');
+
+  // loops: fine in a workflow and in a pile of ideas, never in tasks or an outline
+  r = await link({ from: R.id, to: Q.id, label: 'retry' }); assert.equal(r.status, 201); console.log('ok a workflow may loop back');
+  r = await call('PATCH', `/api/boards/${flow.id}`, { mode: 'nope' }); assert.equal(r.status, 400);
+  r = await call('PATCH', `/api/boards/${flow.id}`, { mode: 'tasks', name: 'renamed-too-early' });
+  assert.equal(r.status, 409); assert.match(r.data.error, /Tasks cannot have a loop/); assert.match(r.data.error, /Did it go through\?/); assert.match(r.data.error, /Try again/);
+  assert.equal(r.data.loop[0], r.data.loop.at(-1)); assert.deepEqual([...new Set(r.data.loop)].sort(), [Q.id, R.id].sort());
+  r = (await call('GET', `/api/boards/${flow.id}`)).data.board; assert.equal(r.mode, 'flow'); assert.equal(r.name, 'mode-flow'); console.log('ok a looping board cannot become a tasks board; nothing was saved, and the answer names the loop');
+  r = await call('PATCH', `/api/boards/${flow.id}`, { mode: 'plan' }); assert.equal(r.status, 409); assert.match(r.data.error, /Planning cannot have a loop/); console.log('ok ...nor an outline');
+  r = await call('PATCH', `/api/boards/${flow.id}`, { mode: 'ideas' }); assert.equal(r.status, 200); assert.equal(r.data.mode, 'ideas'); assert.equal(r.data.total, 3); console.log('ok workflow -> ideas keeps the loop');
+  // ideas: a tick is not blocked by anything
+  r = await call('PATCH', `/api/tasks/${Q.id}`, { status: 'done' }); assert.equal(r.status, 200); assert.equal(r.data.status, 'done'); console.log('ok on an ideas board a card can be ticked whatever links into it');
+  await call('PATCH', `/api/tasks/${Q.id}`, { status: 'todo' });
+  // a deleted card comes back with all its links on a board that may loop
+  await call('DELETE', `/api/tasks/${Q.id}`);
+  r = await call('POST', `/api/tasks/${Q.id}/restore`); assert.equal(r.data.deps.length, 3); assert.equal(r.data.deps.find((d) => d.from === R.id).label, 'retry'); console.log('ok restore keeps every link (and its label) where loops are allowed');
+  // without the loop the board can be an outline, then a to-do board, and the rules of each apply at once
+  await call('DELETE', `/api/deps/${R.id}/${Q.id}`);
+  r = await call('PATCH', `/api/boards/${flow.id}`, { mode: 'plan' }); assert.equal(r.data.mode, 'plan');
+  r = await link({ from: R.id, to: S.id }); assert.equal(r.status, 409); console.log('ok an outline refuses a loop');
+  r = await call('PATCH', `/api/tasks/${R.id}`, { status: 'done' }); assert.equal(r.status, 200); await call('PATCH', `/api/tasks/${R.id}`, { status: 'todo' }); console.log('ok nothing is blocked in an outline either');
+  r = await call('PATCH', `/api/boards/${flow.id}`, { mode: 'tasks' }); assert.equal(r.data.mode, 'tasks');
+  r = await call('PATCH', `/api/tasks/${R.id}`, { status: 'done' }); assert.equal(r.status, 409); assert.match(r.data.error, /blocked by 1/);
+  r = await call('PATCH', `/api/tasks/${R.id}`, { status: 'done', force: true }); assert.equal(r.status, 200);
+  r = await link({ from: R.id, to: S.id }); assert.equal(r.status, 409); console.log('ok switched to tasks: blockers and the no-loop rule are back');
+  assert.equal((await call('GET', `/api/boards/${flow.id}`)).data.deps.find((d) => d.from === Q.id).label, 'No, again'); console.log('ok labels survive every mode switch');
+  for (const id of made) await call('DELETE', `/api/boards/${id}`);
+}
+console.log('API TESTS PASSED');
